@@ -1,0 +1,2 @@
+let:
+  - SELECT env FROM spec.containers
