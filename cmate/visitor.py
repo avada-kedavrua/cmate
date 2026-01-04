@@ -6,9 +6,9 @@ from collections import defaultdict
 
 from msguard.security import open_s
 
-from . import _ast
-from .util import Severity, cmate_logger
+from . import _ast, custom_fn
 from .data_source import NA
+from .util import Severity, cmate_logger, func_timeout
 
 
 class CMateError(Exception):
@@ -198,7 +198,7 @@ class Evaluator(NodeVisitor):
             '>=': operator.ge,
             '==': operator.eq,
             '!=': operator.ne,
-            '=~': lambda a, b: re.search(b, a),
+            '=~': lambda a, b: func_timeout(3, re.search, b, a),
             'or': lambda a, b: a or b,
             'in': lambda a, b: a in b,
             'and': lambda a, b: a and b,
@@ -232,8 +232,6 @@ class Evaluator(NodeVisitor):
     
     @staticmethod
     def _load_custom_fn():
-        from . import custom_fn
-
         custom_fn_map = {}
         for name in dir(custom_fn):
             obj = getattr(custom_fn, name)

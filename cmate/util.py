@@ -2,14 +2,15 @@ import os
 import json
 import socket
 import logging
+import threading
 from typing import Any
 from enum import Enum
 from functools import total_ordering
 
 import yaml
 import psutil
-from msguard.security import open_s
 from colorama import Fore, Style
+from msguard.security import open_s
 
 
 class ANSIColoredFormatter(logging.Formatter):
@@ -115,3 +116,25 @@ def get_cur_ip():
             if addr.family == socket.AF_INET and not addr.address.startswith("127"):
                 return addr.address
     return ''
+
+
+def func_timeout(timeout, func, *args, **kwargs):
+    result = {'value': None, 'exception': None}
+
+    def wrapper():
+        try:
+            result['value'] = func(*args, **kwargs)
+        except Exception as e:
+            result['exception'] = e
+
+    thread = threading.Thread(target=wrapper, daemon=True)
+    thread.start()
+    thread.join(timeout)
+
+    if thread.is_alive():
+        raise TimeoutError(f"Function {func.__name__} timed out after {timeout} seconds")
+
+    if result['exception'] is not None:
+        raise result['exception']
+
+    return result['value']
