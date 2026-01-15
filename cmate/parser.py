@@ -310,7 +310,11 @@ class Parser:
         elif len(p) == 9:
             orelse = p[7]
         else:
-            orelse = [p[5][-1]]
+            # if -> head -> p[5][1] -> ... -> tail -> p[8]
+            head = p[5][0]
+            tail = p[5][-1]
+            orelse = [head]
+            tail.orelse = p[8]
         p[0] = If(tok.lineno, tok.col_offset, p[2], p[4], orelse)
 
     @staticmethod
@@ -444,7 +448,11 @@ class Parser:
         elif len(p) == 9:
             orelse = p[7]
         else:
-            orelse = [p[5][-1]]
+            # if -> head -> p[5][1] -> ... -> tail -> p[8]
+            head = p[5][0]
+            tail = p[5][-1]
+            orelse = [head]
+            tail.orelse = p[8]
         p[0] = If(tok.lineno, tok.col_offset, p[2], p[4], orelse)
 
     @staticmethod
