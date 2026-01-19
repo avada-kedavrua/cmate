@@ -7,7 +7,7 @@ from typing import Set
 from colorama import Fore, Style
 
 from . import _ast
-from .visitor import PrettyFormatter, Evaluator
+from .visitor import ASTFormatter, _ExpressionEvaluator
 
 
 class RuleAssertionError(AssertionError):
@@ -16,7 +16,7 @@ class RuleAssertionError(AssertionError):
         self.rule_node = rule_node
         self.history = history
 
-        self.pretty_formatter = PrettyFormatter()
+        self.pretty_formatter = ASTFormatter()
 
     def build_err_msg(self):
         indent = len(self.rule_node.severity.value) + 2
@@ -269,7 +269,7 @@ def make_test_suite(data_source, ruleset):
     test_suite = unittest.TestSuite()
     test_loader = unittest.TestLoader()
 
-    extra_attrs = dict(evaluator=Evaluator(data_source), data_source=data_source)
+    extra_attrs = dict(_ExpressionEvaluator=_ExpressionEvaluator(data_source), data_source=data_source)
     for namespace in ruleset:
         test_case_cls_name = f'Test-{namespace}'
         rule_nodes = ruleset[namespace]
@@ -298,8 +298,8 @@ def _make_test_case(cls_name, rule_nodes: Set[_ast.Rule]):
 
 def _make_test_method(rule_node: _ast.Rule):
     def test(inst):
-        if not inst.evaluator.eval(rule_node.test):
-            history = inst.evaluator.history
+        if not inst._ExpressionEvaluator.evaluate(rule_node.test):
+            history = inst._ExpressionEvaluator.history
             raise RuleAssertionError(rule_node, history)
 
     return test

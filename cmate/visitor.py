@@ -2,6 +2,7 @@ import re
 import os
 import inspect
 import operator
+from copy import deepcopy
 from collections import defaultdict
 
 from msguard.security import open_s
@@ -37,6 +38,128 @@ class NodeVisitor:
                 for item in val:
                     if isinstance(item, _ast.Node):
                         self.visit(item)
+
+
+class _ExpressionEvaluator(NodeVisitor):
+    def __init__(self, data_source):
+        self.data_source = data_source
+        self.op_map = {
+            '<': operator.lt,
+            '<=': operator.le,
+            '>': operator.gt,
+            '>=': operator.ge,
+            '==': operator.eq,
+            '!=': operator.ne,
+            '=~': lambda a, b: func_timeout(3, re.search, b, a),
+            'or': lambda a, b: a or b,
+            'in': lambda a, b: a in b,
+            'and': lambda a, b: a and b,
+            'not in': lambda a, b: a not in b,
+            '*': operator.mul,
+            '+': operator.add,
+            '-': operator.sub,
+            '/': operator.truediv,
+            '//': operator.floordiv,
+            '%': operator.mod,
+            '**': operator.pow
+        }
+        self.builtin_fn = {
+            'int': int,
+            'float': float,
+            'bool': bool,
+            'str': str,
+            'list': list,
+            'tuple': tuple,
+            'set': set,
+            'len': len,
+            'range': range,
+            'sum': sum,
+            'min': min,
+            'max': max
+        }
+        self.func_map = {
+            **self.builtin_fn, **self._load_custom_fn()
+        }
+        self.history = None
+    
+    @staticmethod
+    def _load_custom_fn():
+        custom_fn_map = {}
+        for name in dir(custom_fn):
+            obj = getattr(custom_fn, name)
+
+            if (inspect.isfunction(obj) and 
+                not name.startswith('_') and
+                obj.__module__ == custom_fn.__name__):
+
+                custom_fn_map[name] = obj
+        
+        return custom_fn_map
+    
+    def visit_name(self, node: _ast.Name):
+        raise CMateError(
+            f"Direct variable reference is not allowed at line {node.lineno}, column {node.col_offset}. "
+            f"To reference a variable in CMATE expressions, you must use the interpolation syntax: ${{{node.id}}}\n\n"
+        )
+
+    def visit_constant(self, node: _ast.Constant):
+        return node.value
+    
+    def visit_dictpath(self, node: _ast.DictPath):
+        namespace = node.namespace
+        if namespace is None:
+            namespace = 'global'
+
+        path = f'{namespace}::{node.path}'
+        val = self.data_source[path]
+        
+        self.history.append((path, val))
+        return val[0] if isinstance(val, tuple) else val
+    
+    def visit_list(self, node: _ast.List):
+        return [self.visit(elt) for elt in node.elts]
+    
+    def visit_dict(self, node: _ast.Dict):
+        keys = [self.visit(key) for key in node.keys]
+        values = [self.visit(value) for value in node.values]
+
+        return dict(zip(keys, values))
+    
+    def visit_compare(self, node: _ast.Compare):
+        op = self.op_map[node.op]
+        left = self.visit(node.left)
+        comparator = self.visit(node.comparator)
+
+        return op(left, comparator)
+    
+    def visit_call(self, node: _ast.Call):
+        func_name = node.func.id
+        func = self.func_map.get(func_name)
+        if func is None:
+            raise CMateError(
+                f"Undefined function '{func_name}' is found at line {node.lineno}, column {node.col_offset}. "
+                "You should implement it yourself by adding it to `custom_fn.py`."
+            )
+
+        args = [self.visit(arg) for arg in node.args]
+        return func(*args)
+    
+    def visit_unaryop(self, node: _ast.UnaryOp):
+        op = self.op_map[node.op]
+        operand = self.visit(node.operand)
+
+        return op(operand)
+    
+    def visit_binop(self, node: _ast.BinOp):
+        op = self.op_map[node.op]
+        left = self.visit(node.left)
+        right = self.visit(node.right)
+
+        return op(left, right)
+    
+    def evaluate(self, node: _ast.Node):
+        self.history = []
+        return self.visit(node)
 
 
 class InfoCollector(NodeVisitor):
@@ -188,125 +311,270 @@ class InfoCollector(NodeVisitor):
         raise CMateError(f'Unsupported node type: {type(node).__name__}')
 
 
-class Evaluator(NodeVisitor):
-    def __init__(self, data_source):
-        self.data_source = data_source
-        self.op_map = {
-            '<': operator.lt,
-            '<=': operator.le,
-            '>': operator.gt,
-            '>=': operator.ge,
-            '==': operator.eq,
-            '!=': operator.ne,
-            '=~': lambda a, b: func_timeout(3, re.search, b, a),
-            'or': lambda a, b: a or b,
-            'in': lambda a, b: a in b,
-            'and': lambda a, b: a and b,
-            'not in': lambda a, b: a not in b,
-            '*': operator.mul,
-            '+': operator.add,
-            '-': operator.sub,
-            '/': operator.truediv,
-            '//': operator.floordiv,
-            '%': operator.mod,
-            '**': operator.pow
-        }
-        self.builtin_fn = {
-            'int': int,
-            'float': float,
-            'bool': bool,
-            'str': str,
-            'list': list,
-            'tuple': tuple,
-            'set': set,
-            'len': len,
-            'range': range,
-            'sum': sum,
-            'min': min,
-            'max': max
-        }
-        self.func_map = {
-            **self.builtin_fn, **self._load_custom_fn()
-        }
-        self.history = None
+class RuleCollector(NodeVisitor):
+    def __init__(self, input_configs, data_source, severity):
+        self._input_configs = input_configs
+        self._severity = Severity[severity.upper()]
+        self._data_source = data_source
+        self._evaluator = _ExpressionEvaluator(data_source)
+        self._pretty_formatter = ASTFormatter()
+        self._variable_processor = AssignmentProcessor(input_configs, data_source)
+        self._set_env_generator = EnvironmentScriptGenerator(data_source)
+
+        self._namespace = None
+        self._ruleset = defaultdict(set)
+        self._skip_flag = False
+        self._in_loop = False
+        self._break = False
+        self._continue = False
+        self._loop_target = None
+        self._loop_reference = None
     
-    @staticmethod
-    def _load_custom_fn():
-        custom_fn_map = {}
-        for name in dir(custom_fn):
-            obj = getattr(custom_fn, name)
+    def visit_meta(self, node):
+        pass
 
-            if (inspect.isfunction(obj) and 
-                not name.startswith('_') and
-                obj.__module__ == custom_fn.__name__):
+    def visit_dependency(self, node):
+        pass
+    
+    def visit_global(self, node: _ast.Global):
+        self._variable_processor.process(node)
 
-                custom_fn_map[name] = obj
+    def visit_partition(self, node: _ast.Partition):
+        if node.target.id not in self._input_configs:
+            return
+
+        self._namespace = node.target.id
+
+        if self._namespace == 'env':
+            self._set_env_generator.generate(node)
+
+        for rule_node in node.body:
+            self.visit(rule_node)
+
+        self._namespace = None
+
+    def visit_for(self, node: _ast.For):
+        target = node.target.id # for xx
+        self._loop_target = target
+        it = self._evaluator.evaluate(node.it) # in xx
+
+        if isinstance(node.it, _ast.DictPath):
+            reference = self._pretty_formatter.format(node.it)
+        else:
+            reference = f'loopvar-{node.lineno}-{node.col_offset}'
+            reference_path = f'global::{reference}'
+            self._data_source[reference_path] = it
         
-        return custom_fn_map
+        self._in_loop = True
+        for i, item in enumerate(it):
+            self._loop_reference = f'{reference}[{i}]'
+            self._data_source.flatten('global', {target: item})
     
-    def visit_name(self, node: _ast.Name):
-        path = f'global::{node.id}'
-        return self.data_source[path]
+            for sub_node in deepcopy(node.body):
+                self.visit(sub_node) # next line of code
 
-    def visit_constant(self, node: _ast.Constant):
-        return node.value
-    
+                # if reach 'continue' or 'break', stop reading code
+                if self._continue or self._break:
+                    break
+            
+            self._data_source.unflatten('global', {target: item})
+
+            if self._break:
+                self._break = False
+                break
+
+            if self._continue:
+                self._continue = False
+                continue
+        self._in_loop = False
+        self._loop_reference = None
+
+    def visit_if(self, node: _ast.If):
+        test = node.test
+        self.visit(test)
+
+        if self._evaluator.evaluate(test):
+            for stmt in node.body:
+                self.visit(stmt)
+        elif node.orelse:
+            for stmt in node.orelse:
+                self.visit(stmt)
+
+    def visit_rule(self, node: _ast.Rule):
+        if self._severity > node.severity:
+            return
+
+        self.visit(node.test) # visit first
+        self._ruleset[self._namespace].add(node)
+
     def visit_dictpath(self, node: _ast.DictPath):
-        path = f'{node.namespace}::{node.path}'
-        val = self.data_source[path]
+        if node.namespace is None:
+            if node.path == self._loop_target:
+                node.path = self._loop_reference
+                return
+    
+            local_path = f'{self._namespace}::{node.path}'
+
+            if local_path in self._data_source:
+                node.namespace = self._namespace
+            else:
+                node.namespace = 'global'
+    
+    def visit_break(self, node: _ast.Break):
+        if not self._in_loop:
+            raise CMateError("'break' outside loop")
         
-        self.history.append((path, val))
-        return val[0] if isinstance(val, tuple) else val
-    
-    def visit_list(self, node: _ast.List):
-        return [self.visit(elt) for elt in node.elts]
-    
-    def visit_dict(self, node: _ast.Dict):
-        keys = [self.visit(key) for key in node.keys]
-        values = [self.visit(value) for value in node.values]
+        self._break = True
 
-        return dict(zip(keys, values))
-    
-    def visit_compare(self, node: _ast.Compare):
-        op = self.op_map[node.op]
-        left = self.visit(node.left)
-        comparator = self.visit(node.comparator)
+    def visit_continue(self, node: _ast.Continue):
+        if not self._in_loop:
+            raise CMateError("'continue' not properly in loop")
+        
+        self._continue = True
 
-        return op(left, comparator)
-    
-    def visit_call(self, node: _ast.Call):
-        func = self.func_map[node.func.id]
-        args = [self.visit(arg) for arg in node.args]
-
-        return func(*args)
-    
-    def visit_unaryop(self, node: _ast.UnaryOp):
-        op = self.op_map[node.op]
-        operand = self.visit(node.operand)
-
-        return op(operand)
-    
-    def visit_binop(self, node: _ast.BinOp):
-        op = self.op_map[node.op]
-        left = self.visit(node.left)
-        right = self.visit(node.right)
-
-        return op(left, right)
-    
-    def eval(self, node: _ast.Node):
-        self.history = []
-        return self.visit(node)
+    def collect(self, node: _ast):
+        self.visit(node)
+        return self._ruleset
 
 
-class PrettyFormatter(NodeVisitor):
+class AssignmentProcessor(NodeVisitor):
+    def __init__(self, input_configs, data_source):
+        super().__init__()
+        self._input_configs = input_configs
+        self._data_source = data_source
+        self._evaluator = _ExpressionEvaluator(self._data_source)
+        self._pretty_formatter = ASTFormatter()
+
+        self._skip_flag = False
+        self._in_loop = False
+        self._break = False
+        self._continue = False
+        self._loop_reference = None
+
+    def visit_meta(self, node):
+        pass
+
+    def visit_dependency(self, node):
+        pass
+
+    def visit_global(self, node: _ast.Global):
+        for assign_node in node.body:
+            self.visit(assign_node)
+
+    def visit_partition(self, node: _ast.Partition):
+        pass
+
+    def visit_if(self, node: _ast.If):
+        test = node.test
+        if self._evaluator.evaluate(test):
+            for stmt in node.body:
+                self.visit(stmt)
+        elif node.orelse:
+            for stmt in node.orelse:
+                self.visit(stmt)
+    
+    def visit_for(self, node: _ast.For):
+        target = node.target.id # for xx
+        it = self._evaluator.evaluate(node.it) # in xx
+        
+        self._in_loop = True
+        for i, item in enumerate(it):
+            self._data_source.flatten('global', {target: item})
+            self._loop_reference = f'{self._pretty_formatter.format(node.it)}[{i}]'
+    
+            for sub_node in node.body:
+                self.visit(sub_node) # next line of code
+
+                # if reach 'continue' or 'break', stop reading code
+                if self._continue or self._break:
+                    break
+            
+            self._data_source.unflatten('global', {target: item})
+            if self._break:
+                self._break = False
+                break
+
+            if self._continue:
+                self._continue = False
+                continue
+        self._in_loop = False
+        self._loop_reference = None
+
+    def visit_assign(self, node: _ast.Assign):
+        self._skip_flag = False  # Reset skip flag
+        self.visit(node.value)
+
+        if self._skip_flag:
+            return
+
+        target = node.target.id
+        try:
+            value = self._evaluator.evaluate(node.value)
+        except Exception as e:
+            formatted_value = self._pretty_formatter.format(node.value)
+            cmate_logger.warning(
+                "Failed to assign value '%s' to target '%s' at line %d, column %d. "
+                "The assignment will be skipped. Error details: <%s: %s>",
+                formatted_value, target, node.lineno, node.col_offset, e.__class__.__name__, str(e)
+            )
+            return
+
+        path = f'global::{target}'
+        self._data_source.flatten('global', {target: value}) # store it first
+
+        # take care of reference
+        if self._in_loop and self._loop_reference:
+            # if loop from a temparary var, give it a unique name
+            self._data_source[path] = (value, self._loop_reference)
+        else:
+            # otherwise, use the dict path name
+            reference = self._pretty_formatter.format(node.value)
+            if reference != value: # only stores if reference and value are different
+                self._data_source[path] = (value, reference)
+
+    def visit_dictpath(self, node: _ast.DictPath):
+        if node.namespace in self._input_configs:
+            return
+
+        if node.namespace not in {'global', None}:
+            self._skip_flag = True
+            cmate_logger.warning(
+                "Invalid assignment detected at line %d, column %d. "
+                "A variable cannot be assigned to a dict path whose namespace '%s' "
+                "references a target that was not provided as input. "
+                "The assignment will be skipped. Please ensure the target '%s' is provided using the '-c' option.",
+                node.lineno, node.col_offset, node.namespace, node.namespace
+            )
+
+    def visit_break(self, node: _ast.Break):
+        if not self._in_loop:
+            raise CMateError("'break' outside loop")
+        
+        self._break = True
+
+    def visit_continue(self, node: _ast.Continue):
+        if not self._in_loop:
+            raise CMateError("'continue' not properly in loop")
+        
+        self._continue = True
+
+    def process(self, node):
+        self.visit(node)
+
+
+class ASTFormatter(NodeVisitor):
     def visit_name(self, node: _ast.Name):
         return node.id
 
     def visit_constant(self, node: _ast.Constant):
-        return node.value
+        value = node.value
+        return repr(value) if isinstance(value, str) else value
     
     def visit_dictpath(self, node: _ast.DictPath):
-        return f'{node.namespace}::{node.path}'
+        namespace = node.namespace
+        if namespace is None:
+            namespace = 'global'
+        return f'{namespace}::{node.path}'
     
     def visit_list(self, node: _ast.List):
         return [self.visit(elt) for elt in node.elts]
@@ -325,7 +593,8 @@ class PrettyFormatter(NodeVisitor):
     
     def visit_call(self, node: _ast.Call):
         args = [self.visit(arg) for arg in node.args]
-        return f'{node.func.id}{tuple(args)}'
+        str_args = ', '.join(map(str, args))
+        return f'{node.func.id}({str_args})'
     
     def visit_unaryop(self, node: _ast.UnaryOp):
         operand = self.visit(node.operand)
@@ -345,129 +614,9 @@ class PrettyFormatter(NodeVisitor):
         return self.visit(node)
 
 
-class RuleVisitor(NodeVisitor):
-    def __init__(self, input_configs, data_source, severity):
-        self._input_configs = input_configs
-        self._data_source = data_source
-        self._severity = Severity[severity.upper()]
-
-        self._pretty_formatter = PrettyFormatter()
-        self._evaluator = Evaluator(self._data_source)
-
-        self._section = None
-        self._current_namespace = None
-        self._ruleset = defaultdict(set)
-    
-    def visit_meta(self, node):
-        pass
-
-    def visit_dependency(self, node):
-        pass
-    
-    def visit_global(self, node: _ast.Global):
-        self._section = 'global'
-
-        for assign_node in node.body:
-            self.visit(assign_node)
-        
-        self._section = None
-    
-    def visit_partition(self, node: _ast.Partition):
-        if node.target.id not in self._input_configs:
-            return
-
-        self._section = 'partition'
-        self._current_namespace = node.target.id
-
-        for rule_node in node.body:
-            self.visit(rule_node)
-
-        self._current_namespace = None
-        self._section = None
-
-    def visit_for(self, node: _ast.For):
-        # evaluate iterable in current local context
-        try:
-            evaluator = Evaluator(self._data_source, local_vars=self._merged_locals(),
-                                      default_namespace=getattr(self._current_partition.target, 'id', None))
-            iter_val = evaluator.eval(node.it)
-        except Exception:
-            iter_val = None
-
-        if iter_val is None:
-            return
-
-        # iterate and visit body for each binding
-        for val in iter_val:
-            self._local_stack.append({node.target.id: val})
-            for stmt in node.body:
-                self.visit(stmt)
-            self._local_stack.pop()
-
-    def visit_if(self, node: _ast.If):
-        test = node.test
-        self.visit(test)
-
-        if self._evaluator.eval(test):
-            for stmt in node.body:
-                self.visit(stmt)
-        elif node.orelse:
-            for stmt in node.orelse:
-                self.visit(stmt)
-
-    def visit_assign(self, node: _ast.Assign):
-        target = node.target.id
-        
-        self.visit(node.value)  # visit first
-        try:
-            value = self._evaluator.eval(node.value)
-        except KeyError as e:
-            cmate_logger.warning(
-                "Failed to assign value to '%s' at line %d, column %d. "
-                "KeyError encountered: %s. "
-                "This typically occurs when: "
-                "1. Incorrect context variables are passed through cli, or "
-                "2. The cmate configuration references an undefined value in an expression. "
-                "Please verify that all referenced variables are properly defined.",
-                target, node.value.lineno, node.value.col_offset, e
-            )
-            return
-
-        path = f'global::{target}'
-        self._data_source[path] = (
-            value,
-            self._pretty_formatter.format(node.value)
-        )
-
-    def visit_rule(self, node: _ast.Rule):
-        if self._severity > node.severity:
-            return
-
-        self.visit(node.test) # visit first
-        self._ruleset[self._current_namespace].add(node)
-
-    def visit_dictpath(self, node: _ast.DictPath):
-        if self._section == 'global' and node.namespace is None:
-            raise RuntimeError
-
-        if node.namespace is None:
-            local_path = f'{self._current_namespace}::{node.path}'
-            global_path = f'global::{node.path}'
-
-            if local_path not in self._data_source and global_path in self._data_source:
-                node.namespace = 'global'
-            else:
-                node.namespace = self._current_namespace
-    
-    def visit(self, node: _ast):
-        super().visit(node)
-
-        return self._ruleset
-
-
-class SetEnvGenerator(NodeVisitor):
+class EnvironmentScriptGenerator(NodeVisitor):
     def __init__(self, data_source):
-        self._evaluator = Evaluator(data_source)
+        self._evaluator = _ExpressionEvaluator(data_source)
         self._white_list = re.compile(r'[a-zA-Z0-9_\-:.;]+')
         self._environ = os.environ.copy()
         self._set_scripts = []
@@ -479,28 +628,26 @@ class SetEnvGenerator(NodeVisitor):
     def visit_dependency(self, node):
         pass
 
-    def visit_global(self, node):
+    def visit_global(self, node: _ast.Global):
         pass
 
     def visit_partition(self, node: _ast.Partition):
-        namespace = node.target.id
-
-        if not namespace == 'env':
+        if node.target.id != 'env':
             return
         
         for rule_node in node.body:
             self.visit(rule_node)
-    
+
     def visit_compare(self, node: _ast.Compare):
-        if not isinstance(node.left, _ast.DictPath) or node.left.namespace != 'env':
+        if not isinstance(node.left, _ast.DictPath) or node.left.namespace == 'context':
             return
 
         env_var = node.left.path
 
         if node.op == '==':
-            expected_val = self._evaluator.eval(node.comparator)
+            expected_val = self._evaluator.evaluate(node.comparator)
         elif node.op == 'in':
-            expected_val = self._evaluator.eval(node.comparator)[0]
+            expected_val = self._evaluator.evaluate(node.comparator)[0]
         else:
             return
 

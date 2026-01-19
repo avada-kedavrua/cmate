@@ -65,7 +65,6 @@ class DataSource:
 
     def __init__(self):
         self._nss = defaultdict(Namespace)
-
         self._nss['global']['cur_ip'] = get_cur_ip()
 
     def __contains__(self, key):
@@ -84,30 +83,45 @@ class DataSource:
         if ns not in self._nss:
             raise KeyError(f"Namespace '{ns}' not found while resolving '{key}'")
         return self._nss[ns][p]
+    
+    def __delitem__(self, key) -> None:
+        ns, p = self._split(key)
+        if ns not in self._nss:
+            raise KeyError(f"Namespace '{ns}' not found while resolving '{key}'")
+        
+        del self._nss[ns][p]
 
     def __copy__(self):
         new = DataSource()
         for ns, mapping in self._nss.items():
             new._nss[ns] = Namespace(mapping.copy())
         return new
-    
-    @property
-    def namespaces(self):
-        return frozenset(self._nss.keys())
 
     def flatten(self, namespace, data):
         """Flatten nested dict/list into scope paths."""
-        if not isinstance(data, (dict, list)):
-            # allow flattening a scalar as the root value
-            self._nss[namespace]['__root__'] = data
-            return
-
         q = deque([(data, '')])
         while q:
             node, pth = q.popleft()
 
             key_path = pth if pth else '__root__'
             self._nss[namespace][key_path] = node
+
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    new_p = f"{pth}.{k}" if pth else f"{k}"
+                    q.append((v, new_p))
+            elif isinstance(node, list):
+                for i, item in enumerate(node):
+                    new_p = f"{pth}[{i}]" if pth else f"[{i}]"
+                    q.append((item, new_p))
+    
+    def unflatten(self, namespace, data):
+        q = deque([(data, '')])
+        while q:
+            node, pth = q.popleft()
+
+            key_path = pth if pth else '__root__'
+            del self._nss[namespace][key_path]
 
             if isinstance(node, dict):
                 for k, v in node.items():

@@ -26,6 +26,16 @@ class ANSIColoredFormatter(logging.Formatter):
         return message
 
 
+LOG_LEVELS = {
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "warning": logging.WARNING,
+    "error": logging.ERROR,
+    "fatal": logging.FATAL,
+    "critical": logging.CRITICAL,
+}
+
+
 def get_logger():
     logger = logging.getLogger("msprechecker")
     logger.propagate = False
