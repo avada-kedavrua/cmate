@@ -385,7 +385,7 @@ a = {}
     assert assign_node1.value.values == []
 
 
-def test_parse_given_nested_if_elif_condition_when_input_is_valid_then_generate_correct_ast_structure(parser):
+def test_parse_nested_if_elif_else_statements_in_global_block_then_ast_structure_correct(parser):
     text = '''\
 [global]
 if a < 2:
@@ -396,6 +396,7 @@ elif a < 4:
     b = 4
 else:
     b = 5
+    b = 6
 fi
 ---
 '''
@@ -412,3 +413,15 @@ fi
     assert isinstance(if_node.test, Compare)
     assert len(if_node.orelse) == 1
     assert isinstance(if_node.orelse[0], If)
+
+    next_if_node = if_node.orelse[0]
+    assert isinstance(next_if_node, If)
+    assert isinstance(next_if_node.test, Compare)
+    assert len(next_if_node.orelse) == 1
+    assert isinstance(next_if_node.orelse[0], If)
+
+    next_if_node = next_if_node.orelse[0]
+    assert isinstance(next_if_node, If)
+    assert isinstance(next_if_node.test, Compare)
+    assert len(next_if_node.orelse) == 2
+    assert isinstance(next_if_node.orelse[0], Assign)
