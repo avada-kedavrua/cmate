@@ -1,14 +1,12 @@
 import json
-import os
 import sys
-from io import StringIO
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import mock_open, patch
 
 import pytest
 
 from cmate import cmate
 from cmate._ast import Constant, DictPath, Rule
-from cmate.data_source import NA, DataSource
+from cmate.data_source import DataSource, NA
 from cmate.util import Severity
 
 
@@ -316,7 +314,7 @@ class TestInspect:
     def test_inspect_text(self, capsys):
         """Test inspect with text format"""
         cmate.inspect("/path/to/rule.cmate", "text")
-        captured = capsys.readouterr()
+        captured = capsys.readouterr()  # noqa: F841
         # Should output something
 
     @patch("cmate.cmate.open_s", mock_open(read_data="[metadata]\nname = 'test'\n---"))
@@ -336,7 +334,9 @@ class TestInspect:
 class TestRun:
     """Tests for run function"""
 
-    @patch("cmate.cmate.open_s", mock_open(read_data="[par test]\nassert true, 'test'\n"))
+    @patch(
+        "cmate.cmate.open_s", mock_open(read_data="[par test]\nassert true, 'test'\n")
+    )
     @patch("cmate.cmate._validate_and_load_dependencies")
     def test_run(self, mock_validate):
         """Test run function"""
@@ -345,18 +345,26 @@ class TestRun:
         # Function should complete without error
         assert isinstance(result, int)
 
-    @patch("cmate.cmate.open_s", mock_open(read_data="[par test]\nassert true, 'test'\n"))
+    @patch(
+        "cmate.cmate.open_s", mock_open(read_data="[par test]\nassert true, 'test'\n")
+    )
     def test_run_validation_fails(self):
         """Test run when validation fails"""
         result = cmate.run("/path/to/rule.cmate", configs={})
         assert result == 1
 
-    @patch("cmate.cmate.open_s", mock_open(read_data="[par test]\nassert true, 'test'\n"))
+    @patch(
+        "cmate.cmate.open_s", mock_open(read_data="[par test]\nassert true, 'test'\n")
+    )
     @patch("cmate.cmate._validate_and_load_dependencies")
     def test_run_collect_only(self, mock_validate, capsys):
         """Test run with collect_only flag"""
         mock_validate.return_value = (True, DataSource())
-        result = cmate.run("/path/to/rule.cmate", configs={"test": ("/path", "json")}, collect_only=True)
+        result = cmate.run(
+            "/path/to/rule.cmate",
+            configs={"test": ("/path", "json")},
+            collect_only=True,
+        )
         assert result == 0
 
 
@@ -406,9 +414,7 @@ class TestDisplayText:
 
     def test_display_text_contexts_tuple_desc(self, capsys):
         """Test _display_text_contexts with tuple description"""
-        contexts = {
-            "mode": {"desc": ("Description text",), "options": ["a", "b"]}
-        }
+        contexts = {"mode": {"desc": ("Description text",), "options": ["a", "b"]}}
         cmate._display_text_contexts(contexts)
         captured = capsys.readouterr()
         assert "Description text" in captured.out
@@ -486,7 +492,9 @@ class TestValidateAndLoadDependencies:
             "contexts": {},
             "metadata": {},
         }
-        ret, ds = cmate._validate_and_load_dependencies(info, {"target1": ("/path", None)}, {})
+        ret, ds = cmate._validate_and_load_dependencies(
+            info, {"target1": ("/path", None)}, {}
+        )
         assert ret is False
 
 
@@ -498,9 +506,7 @@ class TestLogMissingError:
         import logging
 
         cmate.logger.setLevel(logging.ERROR)
-        missing_deps = {
-            "target1": {"targets": ["dep1"], "contexts": ["ctx1"]}
-        }
+        missing_deps = {"target1": {"targets": ["dep1"], "contexts": ["ctx1"]}}
         all_targets = {"dep1": {"desc": "Dependency 1"}}
         all_contexts = {"ctx1": {"desc": ("Context 1", None), "options": ["a"]}}
 
@@ -580,7 +586,7 @@ class TestRunExtended:
         result = cmate.run(
             str(rule_file),
             configs={"test": (str(config_file), "json")},
-            output_path=str(output_dir)
+            output_path=str(output_dir),
         )
         # Should complete without error
         assert isinstance(result, int)
@@ -595,20 +601,98 @@ class TestActualRun:
         const = Constant(1, 1, True)
         rule = Rule(1, 1, const, "test message", Severity.ERROR)
         ruleset = {"test": {rule}}
-        output = {}
 
-        result = cmate._actual_run(ruleset, ds, failfast=False, verbosity=False, output_path=None)
+        result = cmate._actual_run(
+            ruleset, ds, failfast=False, verbosity=False, output_path=None
+        )
         assert result is True
 
     def test_actual_run_failure(self):
         """Test _actual_run with failing tests"""
-        from cmate._ast import Compare, DictPath
+        from cmate._ast import Compare
+
         ds = DataSource()
         # Use a comparison that will evaluate to False
-        compare = Compare(1, 1, DictPath(1, 1, "test::key"), "==", Constant(1, 10, "expected"))
+        compare = Compare(
+            1, 1, DictPath(1, 1, "test::key"), "==", Constant(1, 10, "expected")
+        )
         rule = Rule(1, 1, compare, "test message", Severity.ERROR)
         ruleset = {"test": {rule}}
-        output = {}
 
-        result = cmate._actual_run(ruleset, ds, failfast=False, verbosity=False, output_path=None)
+        result = cmate._actual_run(
+            ruleset, ds, failfast=False, verbosity=False, output_path=None
+        )
         assert result is False
+
+
+class TestRunExtendedMore:
+    """More extended tests for run function"""
+
+    @patch("cmate.cmate.parse")
+    @patch("cmate.cmate.InfoCollector")
+    @patch("cmate.cmate._validate_and_load_dependencies")
+    @patch("cmate.cmate.AssignmentProcessor")
+    @patch("cmate.cmate.RuleCollector")
+    def test_run_keyerror_in_collect(
+        self,
+        mock_rule_collector,
+        mock_assignment_processor,
+        mock_validate,
+        mock_info_collector,
+        mock_parse,
+    ):
+        """Test run when KeyError is raised during rule collection"""
+        mock_info_collector.return_value.collect.return_value = {
+            "targets": {},
+            "contexts": {},
+        }
+        mock_validate.return_value = (True, {})
+
+        mock_collector = mock_rule_collector.return_value
+        mock_collector.collect.side_effect = KeyError("test_key")
+
+        result = cmate.run("/path/to/rule.cmate")
+        assert result == 1
+
+
+class TestValidateAndLoadTargetsMore:
+    """Extended tests for _validate_and_load_targets"""
+
+    @patch("cmate.cmate.load")
+    @patch("cmate.cmate.logger")
+    def test_validate_and_load_targets_oserror(self, mock_logger, mock_load):
+        """Test _validate_and_load_targets with OSError"""
+        mock_load.side_effect = OSError("File not found")
+
+        input_targets = {"config": ("/path/to/config.json", None)}
+        all_targets = {"config": {"parse_type": "json"}}
+        ds = DataSource()
+
+        ret, matched = cmate._validate_and_load_targets(input_targets, all_targets, ds)
+        assert ret is False
+
+    @patch("cmate.cmate.load")
+    @patch("cmate.cmate.logger")
+    def test_validate_and_load_targets_typeerror(self, mock_logger, mock_load):
+        """Test _validate_and_load_targets with TypeError"""
+        mock_load.side_effect = TypeError("Invalid type")
+
+        input_targets = {"config": ("/path/to/config.json", None)}
+        all_targets = {"config": {"parse_type": "json"}}
+        ds = DataSource()
+
+        ret, matched = cmate._validate_and_load_targets(input_targets, all_targets, ds)
+        assert ret is False
+
+    @patch("cmate.cmate.load")
+    @patch("cmate.cmate.logger")
+    def test_validate_and_load_targets_generic_exception(self, mock_logger, mock_load):
+        """Test _validate_and_load_targets with generic Exception"""
+        mock_load.side_effect = Exception("Generic error")
+
+        input_targets = {"config": ("/path/to/config.json", None)}
+        all_targets = {"config": {"parse_type": "json"}}
+        ds = DataSource()
+
+        ret, matched = cmate._validate_and_load_targets(input_targets, all_targets, ds)
+        assert ret is False

@@ -14,6 +14,7 @@
 # See the Mulan PSL v2 for more details.
 # -------------------------------------------------------------------------
 
+import logging
 import shutil
 import sys
 import time
@@ -26,6 +27,36 @@ from colorama import Fore, Style
 from . import _ast
 from .util import Severity
 from .visitor import _ExpressionEvaluator, ASTFormatter
+
+
+class LogCollector(logging.Handler):
+    """Custom logging handler to collect all log messages for display at the end."""
+
+    def __init__(self):
+        super().__init__(level=logging.INFO)
+        self.messages = []
+
+    def emit(self, record):
+        # Collect all log messages (INFO, WARNING, ERROR)
+        self.messages.append(self.format(record))
+
+    def get_messages(self):
+        return self.messages
+
+    def clear(self):
+        self.messages = []
+
+    # Backward compatibility properties
+    @property
+    def warnings(self):
+        return self.messages
+
+    def get_warnings(self):
+        return self.messages
+
+
+# Keep WarningCollector for backward compatibility
+WarningCollector = LogCollector
 
 
 class RuleAssertionError(AssertionError):
@@ -83,7 +114,10 @@ class RuleTestResult(unittest.TestResult):
             "ERROR": Fore.RED,
             "s": Fore.YELLOW,
             "SKIPPED": Fore.YELLOW,
+            "W": Fore.YELLOW,
+            "WARNING": Fore.YELLOW,
         }
+        self._log_messages = []  # Store log messages to display at the end
 
     def startTestRun(self):
         self.stream.writeln()
@@ -138,6 +172,14 @@ class RuleTestResult(unittest.TestResult):
             self._update(test, "U")
         return super().addUnexpectedSuccess(test)
 
+    def addLogMessage(self, message):
+        """Add a log message to be displayed at the end."""
+        self._log_messages.append(message)
+
+    def addWarning(self, message):
+        """Add a warning message to be displayed at the end (backward compatibility)."""
+        self._log_messages.append(message)
+
     def printErrors(self):
         if self.errors:
             self.stream.writeln(" ERRORS ".center(self._cols, "="))
@@ -166,6 +208,21 @@ class RuleTestResult(unittest.TestResult):
                 self.stream.writeln(err.build_err_msg())
         self.stream.writeln()
         self.stream.flush()
+
+    def printLogMessages(self):
+        """Print all collected log messages at the end like Pytest."""
+        if self._log_messages:
+            self.stream.writeln(
+                f"{Fore.CYAN}{' LOG MESSAGES '.center(self._cols, '=')}{Fore.RESET}"
+            )
+            for msg in self._log_messages:
+                self.stream.writeln(f"  {msg}")
+            self.stream.writeln()
+            self.stream.flush()
+
+    def printWarnings(self):
+        """Print all collected warnings at the end (backward compatibility)."""
+        self.printLogMessages()
 
     def _update(self, test, ch):
         PERCENT_PADDING = 1
@@ -254,6 +311,31 @@ class RuleTestRunner:
 
         self.verbosity = verbosity
         self.failfast = failfast
+        self._log_collector = LogCollector()
+        # Backward compatibility
+        self._warning_collector = self._log_collector
+        self._setup_log_collection()
+
+    def _setup_log_collection(self):
+        """Set up the log collector to capture all logging messages."""
+        # Remove any existing handlers to avoid duplicates
+        logger = logging.getLogger()
+        for handler in logger.handlers[:]:
+            if isinstance(handler, LogCollector):
+                logger.removeHandler(handler)
+        logger.addHandler(self._log_collector)
+
+    # Keep _setup_warning_collection for backward compatibility
+    _setup_warning_collection = _setup_log_collection
+
+    def _transfer_logs_to_result(self, result):
+        """Transfer collected log messages to the result for display."""
+        for msg in self._log_collector.get_messages():
+            result.addLogMessage(msg)
+        self._log_collector.clear()
+
+    # Keep _transfer_warnings_to_result for backward compatibility
+    _transfer_warnings_to_result = _transfer_logs_to_result
 
     def run(self, suite):
         total = suite.countTestCases()
@@ -285,7 +367,9 @@ class RuleTestRunner:
             if stop_run is not None:
                 stop_run()
         elapsed = time.perf_counter() - t0
+        self._transfer_logs_to_result(res)
         res.printErrors()
+        res.printLogMessages()
 
         counters = [
             ("errors", "errors"),

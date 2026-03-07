@@ -1,12 +1,9 @@
 import json
-import os
-import signal
-import tempfile
 
 import pytest
 import yaml
 
-from cmate.util import Severity, _ext_to_type, func_timeout, get_cur_ip, load
+from cmate.util import _ext_to_type, func_timeout, get_cur_ip, load, Severity
 
 
 class TestSeverity:
@@ -145,7 +142,9 @@ class TestLoad:
 
     def test_load_nonexistent_file(self):
         """Test loading non-existent file"""
-        with pytest.raises(Exception):
+        # open_s from msguard validates path and raises InvalidParameterError
+        # which is a subclass of Exception
+        with pytest.raises(Exception):  # noqa: B017
             load("/nonexistent/path/file.json")
 
 
@@ -170,6 +169,7 @@ class TestFuncTimeout:
 
     def test_func_timeout_success(self):
         """Test function that completes within timeout"""
+
         def quick_func():
             return "success"
 
@@ -178,6 +178,7 @@ class TestFuncTimeout:
 
     def test_func_timeout_with_args(self):
         """Test function with arguments"""
+
         def add(a, b):
             return a + b
 
@@ -186,6 +187,7 @@ class TestFuncTimeout:
 
     def test_func_timeout_with_kwargs(self):
         """Test function with keyword arguments"""
+
         def greet(name, greeting="Hello"):
             return f"{greeting}, {name}"
 
@@ -194,6 +196,7 @@ class TestFuncTimeout:
 
     def test_func_timeout_raises_timeout(self):
         """Test function that exceeds timeout"""
+
         def slow_func():
             import time
 
@@ -205,13 +208,12 @@ class TestFuncTimeout:
 
     def test_func_timeout_exception_propagation(self):
         """Test that exceptions are properly propagated"""
+
         def failing_func():
             raise ValueError("Test error")
 
         with pytest.raises(ValueError, match="Test error"):
             func_timeout(5, failing_func)
-
-
 
     def test_load_yaml_empty_list(self, tmp_path):
         """Test loading YAML with empty list"""

@@ -1,5 +1,3 @@
-import pytest
-
 from cmate._ast import (
     Assign,
     BinOp,

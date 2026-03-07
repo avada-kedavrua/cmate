@@ -1,6 +1,5 @@
 import os
 import socket
-import tempfile
 
 import pytest
 
@@ -40,6 +39,7 @@ class TestPathExists:
 
     def test_path_exists_with_exception(self, tmp_path, monkeypatch):
         """Test path_exists when os.path.exists raises exception"""
+
         def mock_exists(path):
             raise PermissionError("Access denied")
 

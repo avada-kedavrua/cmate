@@ -292,7 +292,7 @@ a = (((((1 == 2) != 3) <= 4) >= 5) < 6) > 7
     document_node = parser.parse(text)
     global_node = document_node.body[0]
     assign_node = global_node.body[0]
-    standard = (((((1 == 2) != 3) <= 4) >= 5) < 6) > 7
+    standard = (((((1 == 2) != 3) <= 4) >= 5) < 6) > 7  # noqa: SIM300
 
     assert standard == evaluator.evaluate(assign_node.value)
 
@@ -340,7 +340,7 @@ a = ${a.b.c} in set([1, 2, 3])
     document_node = parser.parse(text)
     global_node = document_node.body[0]
     assign_node = global_node.body[0]
-    standard = 2 in set([1, 2, 3])
+    standard = 2 in {1, 2, 3}
     assert standard == evaluator.evaluate(assign_node.value)
     assert evaluator.history == [("global::a.b.c", 2)]
 
@@ -392,7 +392,7 @@ assert ${test::ABC} == 'ABC', 'test'
     document_node = parser.parse(text)
     partition_node = document_node.body[0]
     rule_node = partition_node.body[0]
-    assert "test::ABC == 'ABC'" == pretty_formatter.format(rule_node)
+    assert pretty_formatter.format(rule_node) == "test::ABC == 'ABC'"
 
 
 def test_format_assert_statement_with_nested_data_structure_then_output_matches_expected_format(
@@ -407,8 +407,8 @@ assert ${test::ABC} == [{int(2): str(3)}] and not false, 'test'
     partition_node = document_node.body[0]
     rule_node = partition_node.body[0]
     assert (
-        "test::ABC == [{'int(2)': 'str(3)'}] and not False"
-        == pretty_formatter.format(rule_node)
+        pretty_formatter.format(rule_node)
+        == "test::ABC == [{'int(2)': 'str(3)'}] and not False"
     )
 
 
@@ -1077,3 +1077,66 @@ assert true, 'test'
 
     # Should not raise
     processor.visit_partition(document_node.body[0])
+
+
+def test_evaluator_visit_unaryop(parser, evaluator):
+    """Test _ExpressionEvaluator visit_unaryop"""
+    text = """\
+[global]
+a = -123
+---
+"""
+    document_node = parser.parse(text)
+    global_node = document_node.body[0]
+    assign_node = global_node.body[0]
+    result = evaluator.evaluate(assign_node.value)
+    assert result == -123
+
+
+def test_evaluator_visit_binop(parser, evaluator):
+    """Test _ExpressionEvaluator visit_binop"""
+    text = """\
+[global]
+a = 1 + 2
+---
+"""
+    document_node = parser.parse(text)
+    global_node = document_node.body[0]
+    assign_node = global_node.body[0]
+    result = evaluator.evaluate(assign_node.value)
+    assert result == 3
+
+
+def test_evaluator_visit_call_undefined_function(parser, evaluator):
+    """Test _ExpressionEvaluator visit_call with undefined function"""
+    from cmate.visitor import CMateError
+
+    text = """\
+[global]
+a = undefined_func(1)
+---
+"""
+    document_node = parser.parse(text)
+    global_node = document_node.body[0]
+    assign_node = global_node.body[0]
+    with pytest.raises(CMateError, match="undefined_func"):
+        evaluator.evaluate(assign_node.value)
+
+
+def test_rule_collector_visit_assert_with_info_severity(parser):
+    """Test RuleCollector visit_assert with info severity filter"""
+    from cmate.visitor import RuleCollector
+
+    text = """\
+[par env]
+assert true, 'test'
+"""
+    document_node = parser.parse(text)
+    data_source = DataSource()
+    input_configs = {}
+    # Use "error" severity to filter out info rules
+    collector = RuleCollector(input_configs, data_source, "error")
+
+    # Should skip info rules due to severity filter
+    result = collector.collect(document_node)
+    assert len(result) == 0 or all(len(rules) == 0 for rules in result.values())

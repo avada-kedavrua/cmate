@@ -1,8 +1,6 @@
-import copy
-
 import pytest
 
-from cmate.data_source import DataSource, NA, NAType, Namespace
+from cmate.data_source import DataSource, NA, Namespace, NAType
 
 
 class TestNAType:
@@ -41,7 +39,7 @@ class TestNAType:
         """Test NA inequality comparison"""
         assert NA != "other"
         na2 = NAType()
-        assert not (NA != na2)
+        assert NA == na2
 
     def test_na_less_than(self):
         """Test NA less than comparison"""
