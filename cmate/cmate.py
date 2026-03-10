@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 # CLI argument parsers
 # ---------------------------------------------------------------------------
 
-def _parse_configs(configs: Optional[List[str]]) -> Tuple[bool, dict]:
+def _parse_configs(configs: Optional[List[str]]) -> Tuple[bool, Dict[str, Tuple[str, str]]]:
     """
     Parse '-c' arguments of the form '<name>:<path>[@<parse_type>]' or 'env'.
     Returns (ok, {name: (path, parse_type)}).
@@ -81,7 +81,7 @@ def _parse_configs(configs: Optional[List[str]]) -> Tuple[bool, dict]:
     return True, result
 
 
-def _parse_contexts(contexts: Optional[List[str]]) -> Tuple[bool, dict]:
+def _parse_contexts(contexts: Optional[List[str]]) -> Tuple[bool, Dict[str, str]]:
     """
     Parse '-C' arguments of the form '<name>:<value>'.
     Numeric values are coerced via ast.literal_eval; others stay as strings.
@@ -112,7 +112,7 @@ def _parse_contexts(contexts: Optional[List[str]]) -> Tuple[bool, dict]:
 # ---------------------------------------------------------------------------
 
 def _validate_and_load_dependencies(
-    info: dict, input_targets: dict, input_contexts: dict
+    info: Dict[str, Any], input_targets: Dict[str, Tuple[str, str]], input_contexts: Dict[str, str]
 ) -> Tuple[bool, DataSource]:
     """
     Validate that the user supplied at least one recognised target, check that
@@ -147,6 +147,7 @@ def _validate_and_load_dependencies(
 
 def _load_targets(input_targets: dict, all_targets: dict,
                   data_source: DataSource) -> Tuple[bool, list]:
+    """Load targets from the user-supplied config files."""
     matched = []
     for target, (path, parse_type) in input_targets.items():
         if target not in all_targets:
@@ -188,8 +189,9 @@ def _load_targets(input_targets: dict, all_targets: dict,
     return True, matched
 
 
-def _collect_missing(matched: list, input_targets: dict, input_contexts: dict,
-                     all_targets: dict) -> dict:
+def _collect_missing(matched: List[str], input_targets: Dict[str, Tuple[str, str]], input_contexts: Dict[str, str],
+                     all_targets: Dict[str, Dict[str, List[str]]]) -> Dict[str, Dict[str, List[str]]]:
+    """Collect missing dependencies for the given targets and input configs."""
     missing = {}
     for target in matched:
         info = all_targets[target]
@@ -207,7 +209,8 @@ def _collect_missing(matched: list, input_targets: dict, input_contexts: dict,
     return missing
 
 
-def _log_missing(missing: dict, all_targets: dict, all_contexts: dict):
+def _log_missing(missing: Dict[str, Dict[str, List[str]]], all_targets: Dict[str, Dict[str, List[str]]], all_contexts: Dict[str, Dict[str, List[str]]]) -> None:
+    """Log missing dependencies for the given targets and input configs."""
     parts = []
     for target, m in missing.items():
         parts.append(f"Target {target!r} is missing required dependencies:")
@@ -232,8 +235,9 @@ def _log_missing(missing: dict, all_targets: dict, all_contexts: dict):
     logger.error("\n".join(parts))
 
 
-def _load_contexts(input_contexts: dict, all_contexts: dict,
-                   data_source: DataSource):
+def _load_contexts(input_contexts: Dict[str, str], all_contexts: Dict[str, Dict[str, List[str]]],
+                   data_source: DataSource) -> None:
+    """Load contexts from the user-supplied config files."""
     for ctx, value in input_contexts.items():
         if ctx not in all_contexts:
             logger.warning(
@@ -244,11 +248,8 @@ def _load_contexts(input_contexts: dict, all_contexts: dict,
         data_source[f"context::{ctx}"] = value
 
 
-# ---------------------------------------------------------------------------
-# Display helpers  (inspect command)
-# ---------------------------------------------------------------------------
-
-def _display_text(info: dict):
+def _display_text(info: Dict[str, Any]) -> None:
+    """Display rule file info in human-readable format."""
     for attr in ("metadata", "targets", "contexts"):
         if attr not in info:
             logger.critical("Required key %r missing from info dict.", attr)
@@ -298,42 +299,38 @@ def _display_text(info: dict):
     print("Usage: -c <rule_name>:<file_path>  -C <context>:<value>\n")
 
 
-def _display_json(info: dict):
+def _display_json(info: Dict[str, Any]) -> None:
+    """Display rule file info in JSON format."""
     print(json.dumps(info, indent=4, ensure_ascii=False))
 
 
 def _print_section(title: str, level: int = 0):
+    """Print a section header."""
     indent = "  " * level
     print(f"{indent}{title}\n{indent}{'-' * len(title)}")
 
 
 def _print_field(label, value, indent: int = 0):
+    """Print a field in the format: <label> : <value>."""
     print(f"{'  ' * indent}{label} : {value}")
 
 
-# ---------------------------------------------------------------------------
-# JSON serialisation for NA
-# ---------------------------------------------------------------------------
-
 class _NAEncoder(json.JSONEncoder):
+    """JSON encoder that converts NAType instances to a dictionary."""
     def default(self, obj):
         if isinstance(obj, NAType):
             return {"NAType": True}
         return super().default(obj)
 
 
-# ---------------------------------------------------------------------------
-# Core operations
-# ---------------------------------------------------------------------------
-
-def parse(rule_path: str):
+def parse(rule_path: str) -> Document:
     """Parse a cmate rule file and return the Document AST node."""
     parser = Parser()
     with open(rule_path) as f:
         return parser.parse(f.read())
 
 
-def inspect(rule_path: str, output_format: str = "text"):
+def inspect(rule_path: str, output_format: str = "text") -> None:
     """Print human-readable or JSON information about a rule file."""
     formatters = {"text": _display_text, "json": _display_json}
     if output_format not in formatters:
@@ -345,8 +342,8 @@ def inspect(rule_path: str, output_format: str = "text"):
 
 def run(
     rule_path: str,
-    configs: Optional[dict] = None,
-    contexts: Optional[dict] = None,
+    configs: Optional[Dict[str, Tuple[str, str]]] = None,
+    contexts: Optional[Dict[str, str]] = None,
     failfast: bool = False,
     verbosity: bool = False,
     collect_only: bool = False,
@@ -384,7 +381,8 @@ def run(
     return _execute(ruleset, data_source, failfast, verbosity, output_path)
 
 
-def _show_collected(ruleset: dict) -> int:
+def _show_collected(ruleset: Dict[str, List[Rule]]) -> int:
+    """Display the collected rules in a human-readable format."""
     formatter = ASTFormatter()
     lines = []
     for ns, rules in ruleset.items():
@@ -395,8 +393,9 @@ def _show_collected(ruleset: dict) -> int:
     return 0
 
 
-def _execute(ruleset: dict, data_source: DataSource,
+def _execute(ruleset: Dict[str, List[Rule]], data_source: DataSource,
              failfast: bool, verbosity: bool, output_path: str) -> int:
+    """Execute the collected rules and return the result."""
     runner = RuleTestRunner(failfast=failfast, verbosity=verbosity)
     result_log: dict = {}
     suite = make_test_suite(data_source, ruleset, result_log)
@@ -412,11 +411,8 @@ def _execute(ruleset: dict, data_source: DataSource,
     return 0 if result.wasSuccessful() else 1
 
 
-# ---------------------------------------------------------------------------
-# CLI entry point
-# ---------------------------------------------------------------------------
-
-def main():
+def main() -> int:
+    """Main entry point for the cmate command-line tool."""
     ap = argparse.ArgumentParser(
         prog="cmate",
         description="CMATE – Configuration Management and Testing Engine",
@@ -450,15 +446,21 @@ def main():
     ip.add_argument("rule", help="Path to the cmate rule file")
     ip.add_argument("--format", "-f", choices=["text", "json"], default="text",
                     help="Output format (default: text)")
+    ip.add_argument("-l", "--log-level", choices=LOG_LEVELS, default="info",
+                    help="Logging verbosity")
 
     args = ap.parse_args()
-
-    if args.command == "inspect":
-        return inspect(args.rule, args.format)
-
-    # run
     logging.basicConfig(format=LOG_FORMAT, level=LOG_LEVELS[args.log_level])
 
+    if args.command == "inspect":
+        try:
+            inspect(args.rule, args.format)
+        except (OSError, ValueError):
+            logger.exception("Error inspecting rule file")
+            return 1
+        return 0
+
+    # run
     ok, configs = _parse_configs(args.configs)
     if not ok:
         return 1
