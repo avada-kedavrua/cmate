@@ -19,16 +19,11 @@ import ast
 import json
 import logging
 import os
-
 from datetime import datetime
-from typing import List
-
-from msguard import Rule, validate_args
-from msguard.security import open_s
+from typing import List, Optional, Tuple
 
 from ._test import make_test_suite, RuleTestRunner
 from .data_source import DataSource, NAType
-
 from .parser import Parser
 from .util import load
 from .visitor import (
@@ -39,591 +34,446 @@ from .visitor import (
     RuleCollector,
 )
 
-
 LOG_LEVELS = {
-    "debug": logging.DEBUG,
-    "info": logging.INFO,
-    "warning": logging.WARNING,
-    "error": logging.ERROR,
+    "debug":    logging.DEBUG,
+    "info":     logging.INFO,
+    "warning":  logging.WARNING,
+    "error":    logging.ERROR,
     "critical": logging.CRITICAL,
 }
 LOG_FORMAT = "[%(levelname)s] [%(name)s] %(message)s"
 
-
 logger = logging.getLogger(__name__)
 
 
-def _parse_configs(configs: List[str]):
-    res = {}
+# ---------------------------------------------------------------------------
+# CLI argument parsers
+# ---------------------------------------------------------------------------
+
+def _parse_configs(configs: Optional[List[str]]) -> Tuple[bool, dict]:
+    """
+    Parse '-c' arguments of the form '<name>:<path>[@<parse_type>]' or 'env'.
+    Returns (ok, {name: (path, parse_type)}).
+    """
     if not configs:
-        return True, res
+        return True, {}
 
-    splitter = ":"
-    parse_splitter = "@"
-
+    result = {}
     for entry in configs:
-        parts = entry.split(splitter, 1)
-
-        if parts[0] == "env":
-            res["env"] = (None, None)
+        if entry == "env":
+            result["env"] = (None, None)
             continue
 
+        parts = entry.split(":", 1)
         if len(parts) != 2:
             logger.error(
-                "Invalid configuration format. Expected format: '<name>:<path>' or '<name>:<path>@<parse_type>'.\n"
-                "  - <name>: A configuration identifier defined in the cmate file.\n"
-                "  - <path>: File system path for the configuration file.\n"
-                "  - <parse_type>: (Optional) Specifies the parsing method for the file (e.g., 'json', 'yaml')."
+                "Invalid -c format %r. Expected '<name>:<path>' or "
+                "'<name>:<path>@<parse_type>'.", entry
             )
-            return False, res
+            return False, result
 
         name = parts[0]
-        fields = parts[1].split(parse_splitter, 1)
-        path, parse_type = fields[0], None if len(fields) == 1 else fields[1]
+        fields = parts[1].split("@", 1)
+        path = fields[0]
+        parse_type = fields[1] if len(fields) == 2 else None
+        result[name] = (path, parse_type)
 
-        res[name] = (path, parse_type)
-
-    return True, res
+    return True, result
 
 
-def _parse_contexts(configs: List[str]):
-    res = {}
-    if not configs:
-        return True, res
+def _parse_contexts(contexts: Optional[List[str]]) -> Tuple[bool, dict]:
+    """
+    Parse '-C' arguments of the form '<name>:<value>'.
+    Numeric values are coerced via ast.literal_eval; others stay as strings.
+    """
+    if not contexts:
+        return True, {}
 
-    splitter = ":"
-    for entry in configs:
-        parts = entry.split(splitter, 1)
-
+    result = {}
+    for entry in contexts:
+        parts = entry.split(":", 1)
         if len(parts) != 2:
             logger.error(
-                "Invalid format detected. Expected syntax: '<name>:<value>'.\n"
-                "  - <name>: A context namespace defined in the CMATE configuration.\n"
-                "  - <value>: The value to assign to the specified context namespace.\n"
-                "Note: Unquoted numbers (e.g., 2) are treated as integers. "
-                "To pass a string value, enclose it in quotes: '2'."
+                "Invalid -C format %r. Expected '<name>:<value>'.", entry
             )
-            return False, res
+            return False, result
 
-        name, value = parts
+        name, raw = parts
         try:
-            res[name] = ast.literal_eval(value)
+            result[name] = ast.literal_eval(raw)
         except (ValueError, SyntaxError):
-            res[name] = value
+            result[name] = raw
 
-    return True, res
+    return True, result
 
 
-def _display_text(info):
+# ---------------------------------------------------------------------------
+# Dependency validation and data loading
+# ---------------------------------------------------------------------------
+
+def _validate_and_load_dependencies(
+    info: dict, input_targets: dict, input_contexts: dict
+) -> Tuple[bool, DataSource]:
+    """
+    Validate that the user supplied at least one recognised target, check that
+    all required dependencies are present, then load files into a DataSource.
+    """
+    input_targets  = input_targets  or {}
+    input_contexts = input_contexts or {}
+
+    all_targets  = info["targets"]
+    all_contexts = info["contexts"]
+    data_source  = DataSource()
+
+    ok, matched = _load_targets(input_targets, all_targets, data_source)
+    if not ok:
+        return False, data_source
+
+    if not matched:
+        logger.error(
+            "No recognised targets supplied. The rule file supports: %s",
+            list(all_targets.keys()),
+        )
+        return False, data_source
+
+    missing = _collect_missing(matched, input_targets, input_contexts, all_targets)
+    if missing:
+        _log_missing(missing, all_targets, all_contexts)
+        return False, data_source
+
+    _load_contexts(input_contexts, all_contexts, data_source)
+    return True, data_source
+
+
+def _load_targets(input_targets: dict, all_targets: dict,
+                  data_source: DataSource) -> Tuple[bool, list]:
+    matched = []
+    for target, (path, parse_type) in input_targets.items():
+        if target not in all_targets:
+            logger.warning(
+                "Target %r not defined in the rule file – skipped. "
+                "Known targets: %s", target, list(all_targets.keys())
+            )
+            continue
+
+        matched.append(target)
+
+        if target == "env":
+            data_source.flatten("env", dict(os.environ))
+            continue
+
+        effective_parse_type = parse_type or all_targets[target].get("parse_type")
+        try:
+            data = load(path, effective_parse_type)
+        except OSError:
+            logger.error(
+                "Target %r not found at %r. Check the path.", target, path
+            )
+            return False, matched
+        except TypeError:
+            logger.error(
+                "Unsupported parse type %r for target %r at %r. "
+                "Specify one with '-c %s:%s@<type>'.",
+                effective_parse_type, target, path, target, path,
+            )
+            return False, matched
+        except Exception:
+            logger.exception(
+                "Failed to parse target %r from %r.", target, path
+            )
+            return False, matched
+
+        data_source.flatten(target, data)
+
+    return True, matched
+
+
+def _collect_missing(matched: list, input_targets: dict, input_contexts: dict,
+                     all_targets: dict) -> dict:
+    missing = {}
+    for target in matched:
+        info = all_targets[target]
+        req_targets  = info.get("required_targets")  or []
+        req_contexts = info.get("required_contexts") or []
+
+        absent_targets  = [t for t in req_targets  if t not in input_targets]
+        absent_contexts = [c for c in req_contexts if c not in input_contexts]
+
+        if absent_targets or absent_contexts:
+            missing[target] = {
+                "targets":  absent_targets,
+                "contexts": absent_contexts,
+            }
+    return missing
+
+
+def _log_missing(missing: dict, all_targets: dict, all_contexts: dict):
+    parts = []
+    for target, m in missing.items():
+        parts.append(f"Target {target!r} is missing required dependencies:")
+        for t in m["targets"]:
+            info = all_targets.get(t, {})
+            desc = info.get("desc") or "No description available."
+            parts.append(f"  - {t}: {desc}")
+        for c in m["contexts"]:
+            info = all_contexts.get(c, {})
+            ctx_desc = info.get("desc")
+            desc = ctx_desc[0] if isinstance(ctx_desc, tuple) else "No description."
+            opts = info.get("options", [])
+            parts.append(f"  - {c}: {opts}")
+            parts.append(f"      {desc}")
+        parts.append("")
+
+    parts.append(
+        "Resolve with:\n"
+        "  -c <target>:<path>   to supply a missing config target\n"
+        "  -C <context>:<value> to supply a missing context variable"
+    )
+    logger.error("\n".join(parts))
+
+
+def _load_contexts(input_contexts: dict, all_contexts: dict,
+                   data_source: DataSource):
+    for ctx, value in input_contexts.items():
+        if ctx not in all_contexts:
+            logger.warning(
+                "Context %r not defined in rule file – skipped. Known: %s",
+                ctx, list(all_contexts.keys())
+            )
+            continue
+        data_source[f"context::{ctx}"] = value
+
+
+# ---------------------------------------------------------------------------
+# Display helpers  (inspect command)
+# ---------------------------------------------------------------------------
+
+def _display_text(info: dict):
     for attr in ("metadata", "targets", "contexts"):
         if attr not in info:
-            logger.critical(
-                "Required attribute '%s' is missing from the configuration data structure. "
-                "This is likely caused by one of the following issues:\n"
-                "  1. The CMATE rule file is corrupted or has an invalid format\n"
-                "  2. Internal parsing logic failed to extract the required attribute\n"
-                "  3. Private API methods were called directly with incomplete data\n\n"
-                "This is a critical system error that requires immediate attention. "
-                "Please ensure that:\n"
-                "  - CMATE rule files follow the correct schema\n"
-                "  - Only public APIs are used for configuration processing",
-                attr,
-            )
+            logger.critical("Required key %r missing from info dict.", attr)
             return
-
-    _display_text_overview(info["metadata"])
-    _display_text_contexts(info["contexts"])
-    _display_text_targets(info["targets"])
-
-    # 使用说明
-    print("Usage: -c <rule_name>:<file_path> -C <context>:<value>\n")
-
-
-def _display_text_overview(metadata):
-    _format_section("Overview")
-    if metadata:
-        for key, value in metadata.items():
-            _format_field(key, value or "", 1)
+    _print_section("Overview")
+    if info["metadata"]:
+        for k, v in info["metadata"].items():
+            _print_field(k, v or "", indent=1)
     else:
         print("No overview available")
     print("\n")
 
-
-def _display_text_contexts(contexts):
-    _format_section("Context Variables")
-    if contexts:
-        for ctx_var, ctx_info in contexts.items():
-            desc = (
-                ctx_info["desc"][0]
-                if isinstance(ctx_info["desc"], tuple)
-                else "No description provided"
-            )
-            options = ctx_info["options"]
-            _format_field(ctx_var, options)
+    _print_section("Context Variables")
+    if info["contexts"]:
+        for var, ctx in info["contexts"].items():
+            desc = ctx["desc"][0] if isinstance(ctx["desc"], tuple) else "No description."
+            _print_field(var, ctx["options"])
             print(f"    {desc}\n")
     else:
         print("\nNo contexts available.")
     print()
 
+    _print_section("Config Targets")
+    if info["targets"]:
+        for name, tinfo in info["targets"].items():
+            _print_section(name, level=2)
+            desc = tinfo["desc"] or "No description."
+            parse_type = tinfo["parse_type"] or "Unknown"
+            req_targets  = tinfo["required_targets"]
+            req_contexts = tinfo["required_contexts"]
 
-def _display_text_targets(targets):
-    _format_section("Config Targets")
-    if targets:
-        for target_name, target_info in targets.items():
-            _format_section(f"{target_name}", 2)
-
-            desc = target_info["desc"] or "No description provided"
-            parse_type = target_info["parse_type"] or "Unknown"
-            required_targets = target_info["required_targets"]
-            required_contexts = target_info["required_contexts"]
-
-            if target_name == "env":
-                _format_field("description", "Environment variables validation", 4)
+            if name == "env":
+                _print_field("description", "Environment variable validation", indent=4)
             else:
-                _format_field("type", parse_type, 4)
-                _format_field("description", desc, 4)
+                _print_field("type",        parse_type, indent=4)
+                _print_field("description", desc,       indent=4)
 
-            if required_targets:
-                _format_field("required_targets", ", ".join(required_targets), 4)
-            if required_contexts:
-                _format_field("required_contexts", ", ".join(required_contexts), 4)
+            if req_targets:
+                _print_field("required_targets",  ", ".join(req_targets),  indent=4)
+            if req_contexts:
+                _print_field("required_contexts", ", ".join(req_contexts), indent=4)
             print()
     else:
         print("\nNo config targets available.")
     print()
 
+    print("Usage: -c <rule_name>:<file_path>  -C <context>:<value>\n")
 
-def _format_section(title, level=0):
+
+def _display_json(info: dict):
+    print(json.dumps(info, indent=4, ensure_ascii=False))
+
+
+def _print_section(title: str, level: int = 0):
     indent = "  " * level
-    separator = "-" * len(title)
-
-    print(f"{indent}{title}\n{indent}{separator}")
+    print(f"{indent}{title}\n{indent}{'-' * len(title)}")
 
 
-def _format_field(label, value, indent=0):
+def _print_field(label, value, indent: int = 0):
     print(f"{'  ' * indent}{label} : {value}")
 
 
-def _display_json(result):
-    print(json.dumps(result, indent=4, ensure_ascii=False))
+# ---------------------------------------------------------------------------
+# JSON serialisation for NA
+# ---------------------------------------------------------------------------
 
-
-def _validate_and_load_dependencies(info, input_targets, input_contexts):
-    input_targets = input_targets or {}
-    input_contexts = input_contexts or {}
-
-    all_targets = info["targets"]
-    all_contexts = info["contexts"]
-
-    data_source = DataSource()
-
-    ret, matched_targets = _validate_and_load_targets(
-        input_targets, all_targets, data_source
-    )
-    if not ret:
-        return ret, data_source
-
-    if not matched_targets:
-        logger.error(
-            "No configuration targets from the input matched. "
-            "The cmate file supports the following configuration targets: \n  - %s",
-            "\n  - ".join(all_targets.keys()),
-        )
-        return False, data_source
-
-    missing_deps = _collect_missing_dependencies(
-        matched_targets, input_targets, input_contexts, all_targets
-    )
-    if missing_deps:
-        _log_missing_error(missing_deps, all_targets, all_contexts)
-        return False, data_source
-
-    _validate_and_load_contexts(input_contexts, all_contexts, data_source)
-    return True, data_source
-
-
-def _validate_and_load_targets(input_targets, all_targets, data_source):
-    matched_targets = []
-    for target, (input_path, input_parse_type) in input_targets.items():
-        if target not in all_targets:
-            logger.warning(
-                "Configuration target '%s' is not defined in the cmate file and will be skipped. "
-                "Currently supported targets are: %s",
-                target,
-                list(all_targets.keys()),
-            )
-            continue
-
-        matched_targets.append(target)
-        if target == "env":
-            parsed_data = dict(os.environ.items())
-        else:
-            # User-specified parse type, rule-defined parse type, or None (for extension-based detection)
-            parse_type = input_parse_type or all_targets[target].get("parse_type")
-
-            try:
-                parsed_data = load(input_path, parse_type)
-            except OSError:
-                logger.error(
-                    "Configuration target '%s' was not found at the specified path: '%s'. "
-                    "Please verify that the file exists and the path is correct.",
-                    target,
-                    input_path,
-                )
-                return False, matched_targets
-            except TypeError:
-                logger.error(
-                    "Parse type '%s' is not supported for configuration '%s' at: '%s'. "
-                    "To resolve, specify a supported parse type using: '-c %s:%s@<parse-type>'",
-                    parse_type,
-                    target,
-                    input_path,
-                    target,
-                    input_path,
-                )
-                return False, matched_targets
-            except Exception:
-                logger.exception(
-                    "Failed to parse configuration '%s' from: '%s'. "
-                    "The %s syntax appears to be invalid.",
-                    target,
-                    input_path,
-                    parse_type,
-                )
-                return False, matched_targets
-
-        data_source.flatten(target, parsed_data)
-
-    return True, matched_targets
-
-
-def _collect_missing_dependencies(
-    matched_targets, input_targets, input_contexts, all_targets
-):
-    missing_deps = {}
-    for target in matched_targets:
-        missing_map = {"targets": [], "contexts": []}
-
-        target_info = all_targets[target]
-        required_targets = target_info["required_targets"] or []
-        required_contexts = target_info["required_contexts"] or []
-
-        for required_target in required_targets:
-            if required_target not in input_targets:
-                missing_map["targets"].append(required_target)
-
-        for required_context in required_contexts:
-            if required_context not in input_contexts:
-                missing_map["contexts"].append(required_context)
-
-        if missing_map["targets"] or missing_map["contexts"]:
-            missing_deps[target] = missing_map
-
-    return missing_deps
-
-
-def _log_missing_error(missing_deps, all_targets, all_contexts):
-    error_parts = []
-
-    for target, missing_info in missing_deps.items():
-        missing_targets = missing_info["targets"]
-        missing_contexts = missing_info["contexts"]
-
-        error_parts.append(
-            f"Configuration target '{target}' is missing required dependencies:"
-        )
-
-        if missing_targets:
-            error_parts.append("\nMissing configuration targets:")
-            for missing_target in missing_targets:
-                if missing_target in all_targets:
-                    target_info = all_targets[missing_target]
-                    desc = target_info["desc"] or "No description available."
-                    error_parts.append(f"  - {missing_target}: {desc}")
-
-        if missing_contexts:
-            error_parts.append("\nMissing context variables:")
-            for missing_context in missing_contexts:
-                if missing_context in all_contexts:
-                    context_info = all_contexts[missing_context]
-                    desc = (
-                        context_info["desc"][0]
-                        if isinstance(context_info["desc"], tuple)
-                        else "No description provided"
-                    )
-                    options = context_info["options"]
-                    error_parts.append(f"  - {missing_context} : {options}")
-                    error_parts.append(f"      {desc}")
-        error_parts.append("")
-
-    error_parts.append(
-        "\nTo resolve, please provide the missing dependencies:\n"
-        "  - Use '-c <target-name>:<file-path>' to specify missing configuration targets\n"
-        "  - Use '-C <context-name>:_format_field<value>' to provide required context variables"
-    )
-
-    logger.error("\n".join(error_parts))
-
-
-def _validate_and_load_contexts(input_contexts, all_contexts, data_source):
-    for context, value in input_contexts.items():
-        if context not in all_contexts:
-            logger.warning(
-                "Context '%s' is not defined in the cmate file and will be skipped. "
-                "Currently supported contexts are: %s",
-                context,
-                list(all_contexts.keys()),
-            )
-            continue
-        data_source[f"context::{context}"] = value
-
-
-def _collect_only(ruleset):
-    pretty_formatter = ASTFormatter()
-
-    msg = []
-    for namespace in ruleset:
-        msg.append(f"<Namespace {namespace}>")
-        for rule_node in ruleset[namespace]:
-            rule = pretty_formatter.format(rule_node)
-            msg.append(f"  <Rule-{rule_node.lineno} {rule}>")
-    logger.info("\n".join(msg))
-    return 0
-
-
-class NAEncoder(json.JSONEncoder):
+class _NAEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, NAType):
-            return {"NAType": True}  # 使用特殊标记
+            return {"NAType": True}
         return super().default(obj)
 
 
-def _actual_run(ruleset, data_source, failfast, verbosity, output_path):
-    test_runner = RuleTestRunner(failfast=failfast, verbosity=verbosity)
+# ---------------------------------------------------------------------------
+# Core operations
+# ---------------------------------------------------------------------------
 
-    msprechecker_output = {}
-
-    test_suite = make_test_suite(data_source, ruleset, msprechecker_output)
-    result = test_runner.run(test_suite)
-
-    if output_path:
-        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        msprechecker_output_name = f"msprechecker_{timestamp}_output.json"
-        os.makedirs(output_path, exist_ok=True)
-        saved_json = os.path.join(output_path, msprechecker_output_name)
-        with open_s(saved_json, "w", encoding="utf-8") as f:
-            json.dump(
-                msprechecker_output, f, cls=NAEncoder, ensure_ascii=False, indent=4
-            )
-
-    return result.wasSuccessful()
-
-
-def parse(rule_path):
+def parse(rule_path: str):
+    """Parse a cmate rule file and return the Document AST node."""
     parser = Parser()
-
-    with open_s(rule_path) as f:
-        node = parser.parse(f.read())
-
-    return node
+    with open(rule_path) as f:
+        return parser.parse(f.read())
 
 
-def inspect(rule_path: str, output_format: str):
-    output_format_map = {"text": _display_text, "json": _display_json}
-
+def inspect(rule_path: str, output_format: str = "text"):
+    """Print human-readable or JSON information about a rule file."""
+    formatters = {"text": _display_text, "json": _display_json}
+    if output_format not in formatters:
+        raise ValueError(f"Unsupported output format: {output_format!r}")
     node = parse(rule_path)
     info = InfoCollector().collect(node)
-
-    if output_format not in output_format_map:
-        raise ValueError(f"Unsupported output format: {output_format}")
-
-    return output_format_map[output_format](info)
+    return formatters[output_format](info)
 
 
 def run(
     rule_path: str,
-    configs=None,
-    contexts=None,
-    failfast=False,
-    verbosity=False,
-    collect_only=False,
-    output_path="",
-    severity="info",
-):
+    configs: Optional[dict] = None,
+    contexts: Optional[dict] = None,
+    failfast: bool = False,
+    verbosity: bool = False,
+    collect_only: bool = False,
+    output_path: str = "",
+    severity: str = "info",
+) -> int:
+    """
+    Main entry point for rule evaluation.
+    Returns 0 on success, 1 on failure.
+    """
     node = parse(rule_path)
     info = InfoCollector().collect(node)
 
-    ret, data_source = _validate_and_load_dependencies(info, configs, contexts)
-    if not ret:
+    ok, data_source = _validate_and_load_dependencies(info, configs, contexts)
+    if not ok:
         return 1
 
-    AssignmentProcessor(configs, data_source).process(node)  # process global section
-    rule_collector = RuleCollector(configs, data_source, severity)  # collect rule
+    AssignmentProcessor(configs or {}, data_source).process(node)
 
     try:
-        ruleset = rule_collector.collect(node)
+        ruleset = RuleCollector(configs or {}, data_source, severity).collect(node)
     except KeyError:
         logger.exception(
-            "Rule collection failed. "
-            "Most likely because you are trying to use a value from a namespace "
-            "that was not specified in the dependencies section, nor in the partition section."
+            "Rule collection failed – likely a namespace referenced without "
+            "being listed in dependencies or the partition section."
         )
         return 1
 
-    EnvironmentScriptGenerator(data_source).generate(node)  # try to generate env script
+    # Generate env script only when an env partition exists
+    EnvironmentScriptGenerator(data_source).generate(node)
 
     if collect_only:
-        return _collect_only(ruleset)
+        return _show_collected(ruleset)
 
-    return _actual_run(ruleset, data_source, failfast, verbosity, output_path)
+    return _execute(ruleset, data_source, failfast, verbosity, output_path)
 
+
+def _show_collected(ruleset: dict) -> int:
+    formatter = ASTFormatter()
+    lines = []
+    for ns, rules in ruleset.items():
+        lines.append(f"<Namespace {ns}>")
+        for rule in rules:
+            lines.append(f"  <Rule-{rule.lineno} {formatter.format(rule)}>")
+    logger.info("\n".join(lines))
+    return 0
+
+
+def _execute(ruleset: dict, data_source: DataSource,
+             failfast: bool, verbosity: bool, output_path: str) -> int:
+    runner = RuleTestRunner(failfast=failfast, verbosity=verbosity)
+    result_log: dict = {}
+    suite = make_test_suite(data_source, ruleset, result_log)
+    result = runner.run(suite)
+
+    if output_path:
+        ts = datetime.now().strftime("%Y%m%d%H%M%S")
+        os.makedirs(output_path, exist_ok=True)
+        out_file = os.path.join(output_path, f"msprechecker_{ts}_output.json")
+        with open_s(out_file, "w", encoding="utf-8") as f:
+            json.dump(result_log, f, cls=_NAEncoder, ensure_ascii=False, indent=4)
+
+    return 0 if result.wasSuccessful() else 1
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
 
 def main():
-    arg_parser = argparse.ArgumentParser(
+    ap = argparse.ArgumentParser(
         prog="cmate",
-        description="CMATE - Configuration Management and Testing Engine",
+        description="CMATE – Configuration Management and Testing Engine",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    sub = ap.add_subparsers(dest="command", required=True)
 
-    subparsers = arg_parser.add_subparsers(
-        dest="command", required=True, help="Available commands"
-    )
+    # -- run -----------------------------------------------------------------
+    rp = sub.add_parser("run", help="Validate configurations against rules")
+    rp.add_argument("rule", help="Path to the cmate rule file")
+    rp.add_argument("--configs", "-c", nargs="*",
+                    help="Config files: '<name>:<path>[@<type>]' or 'env'")
+    rp.add_argument("--contexts", "-C", nargs="*",
+                    help="Context variables: '<name>:<value>'")
+    rp.add_argument("-co", "--collect-only", action="store_true",
+                    help="List rules without executing them")
+    rp.add_argument("--output-path",
+                    help="Directory for the JSON result file")
+    rp.add_argument("-x", "--fail-fast", action="store_true", dest="failfast",
+                    help="Stop on first failure")
+    rp.add_argument("-v", "--verbose", action="store_true", dest="verbose",
+                    help="Verbose test output")
+    rp.add_argument("-s", "--severity",
+                    choices=["info", "warning", "error"], default="info",
+                    help="Minimum severity to execute (default: info)")
+    rp.add_argument("-l", "--log-level", choices=LOG_LEVELS, default="info",
+                    help="Logging verbosity")
 
-    # Run command
-    run_parser = subparsers.add_parser(
-        "run",
-        help="Execute configuration validation against specified rules",
-        description="Run comprehensive validation of configurations using the specified rule set.",
-    )
+    # -- inspect -------------------------------------------------------------
+    ip = sub.add_parser("inspect", help="Show rule file requirements")
+    ip.add_argument("rule", help="Path to the cmate rule file")
+    ip.add_argument("--format", "-f", choices=["text", "json"], default="text",
+                    help="Output format (default: text)")
 
-    run_parser.add_argument(
-        "rule",
-        type=validate_args(Rule.input_file_read),
-        help="Path to the rule definition file (CMATE format)",
-    )
-
-    run_parser.add_argument(
-        "--configs",
-        "-c",
-        nargs="*",
-        help=(
-            "Configuration files to validate, specified as '<name>:<path>' or '<name>:<path>@<parse-type>'.\n"
-            "  - <name>: Configuration identifier defined in the rule file\n"
-            "  - <path>: File system path to the configuration file\n"
-            "  - <parse-type>: (Optional) Parsing method ('json', 'yaml', 'yml')\n"
-            "Note: For 'env' type targets, the <path> component is optional and will be discarded if provided."
-        ),
-    )
-
-    run_parser.add_argument(
-        "--contexts",
-        "-C",
-        nargs="*",
-        help=(
-            "Context variables required for rule execution, specified as '<name>:<value>'.\n"
-            "  - <name>: Context identifier defined in the rule file\n"
-            "  - <value>: Value to assign to the context variable\n"
-            "Note: Unquoted numbers are parsed as integers. Use quotes for string values: '2'."
-        ),
-    )
-
-    run_parser.add_argument(
-        "-co",
-        "--collect-only",
-        action="store_true",
-        help="Display the list of rules that would be executed without actually running them",
-    )
-
-    run_parser.add_argument(
-        "--output-path", help="Path to the save msprechecker output."
-    )
-
-    run_parser.add_argument(
-        "-x",
-        "--fail-fast",
-        action="store_true",
-        dest="failfast",
-        help="Stop execution immediately upon encountering the first failure or error",
-    )
-
-    run_parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        dest="verbose",
-        help="Enable verbose output, displaying detailed test names and individual results",
-    )
-
-    run_parser.add_argument(
-        "-s",
-        "--severity",
-        choices=["info", "warning", "error"],
-        default="info",
-        help=(
-            "Minimum severity level for rule execution:\n"
-            "  - info: Execute all checks (default)\n"
-            "  - warning: Execute only warning and error checks\n"
-            "  - error: Execute only error checks"
-        ),
-    )
-
-    run_parser.add_argument(
-        "-l",
-        "--log-level",
-        choices=LOG_LEVELS,
-        default="info",
-        help="Set the logging level.",
-    )
-
-    # Inspect command
-    inspect_parser = subparsers.add_parser(
-        "inspect",
-        help="Display detailed information about rule requirements",
-        description="Inspect and display the configuration targets, contexts, and requirements defined in a rule file.",
-    )
-
-    inspect_parser.add_argument(
-        "rule",
-        type=validate_args(Rule.input_file_read),
-        help="Path to the rule definition file (CMATE format)",
-    )
-
-    inspect_parser.add_argument(
-        "--format",
-        "-f",
-        choices=["text", "json"],
-        default="text",
-        help=(
-            "Output format for the inspection results:\n"
-            "  - text: Human-readable text format (default)\n"
-            "  - json: Structured JSON format for programmatic processing"
-        ),
-    )
-
-    args = arg_parser.parse_args()
+    args = ap.parse_args()
 
     if args.command == "inspect":
         return inspect(args.rule, args.format)
 
-    elif args.command == "run":
-        logging.basicConfig(format=LOG_FORMAT, level=LOG_LEVELS[args.log_level])
-        ret, configs = _parse_configs(args.configs)
-        if not ret:
-            return 1
+    # run
+    logging.basicConfig(format=LOG_FORMAT, level=LOG_LEVELS[args.log_level])
 
-        ret, contexts = _parse_contexts(args.contexts)
-        if not ret:
-            return 1
+    ok, configs = _parse_configs(args.configs)
+    if not ok:
+        return 1
 
-        return run(
-            args.rule,
-            configs,
-            contexts,
-            args.failfast,
-            args.verbose,
-            args.collect_only,
-            args.output_path,
-            args.severity,
-        )
+    ok, contexts = _parse_contexts(args.contexts)
+    if not ok:
+        return 1
 
-    return 0
+    return run(
+        args.rule,
+        configs,
+        contexts,
+        args.failfast,
+        args.verbose,
+        args.collect_only,
+        args.output_path or "",
+        args.severity,
+    )

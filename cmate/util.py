@@ -14,63 +14,70 @@
 # See the Mulan PSL v2 for more details.
 # -------------------------------------------------------------------------
 
+import concurrent.futures
 import json
 import os
-import signal
 import socket
 from enum import Enum
-from functools import total_ordering
 from typing import Any, Optional
 
 import psutil
-
 import yaml
 from colorama import Fore, Style
 from msguard.security import open_s
 
 
-@total_ordering
 class Severity(Enum):
-    INFO = "[RECOMMEND]"
+    INFO    = "[RECOMMEND]"
     WARNING = "[WARNING]"
-    ERROR = "[NOK]"
+    ERROR   = "[NOK]"
 
-    _ORDER_MAP = {"INFO": 0, "WARNING": 1, "ERROR": 2}
+    def _rank(self) -> int:
+        # Canonical ordering: INFO < WARNING < ERROR
+        _order = ["INFO", "WARNING", "ERROR"]
+        return _order.index(self.name)
 
-    def __str__(self):
+    def __lt__(self, other: "Severity") -> bool:
+        if not isinstance(other, Severity):
+            return NotImplemented
+        return self._rank() < other._rank()
+
+    def __le__(self, other: "Severity") -> bool:
+        if not isinstance(other, Severity):
+            return NotImplemented
+        return self._rank() <= other._rank()
+
+    def __gt__(self, other: "Severity") -> bool:
+        if not isinstance(other, Severity):
+            return NotImplemented
+        return self._rank() > other._rank()
+
+    def __ge__(self, other: "Severity") -> bool:
+        if not isinstance(other, Severity):
+            return NotImplemented
+        return self._rank() >= other._rank()
+
+    def __str__(self) -> str:
         return f"{self.color_code}{self.value}{Fore.RESET}"
 
-    def __gt__(self, other):
-        order_map = self._ORDER_MAP.value
-        if isinstance(other, Severity):
-            return order_map[self.name] > order_map[other.name]
-
-        if isinstance(other, str):
-            return order_map[self.name] > order_map[other.upper()]
-
-        return super().__gt__(self, other)
-
     @property
-    def color_code(self):
+    def color_code(self) -> str:
         return {
-            Severity.INFO: Style.BRIGHT + Fore.CYAN,
+            Severity.INFO:    Style.BRIGHT + Fore.CYAN,
             Severity.WARNING: Style.BRIGHT + Fore.YELLOW,
-            Severity.ERROR: Style.BRIGHT + Fore.RED,
+            Severity.ERROR:   Style.BRIGHT + Fore.RED,
         }[self]
 
 
 def _ext_to_type(path: str) -> str:
     _, ext = os.path.splitext(path)
-    if ext.startswith("."):
-        ext = ext[1:]
-    return ext.lower()
+    return ext.lstrip(".").lower()
 
 
 def load(path: str, parse_type: Optional[str] = None) -> Any:
-    """Load configuration from `path` and return parsed object.
-
-    - If `parse_type` is not provided, it's derived from file extension.
-    - Supported types: `json`, `yaml`/`yml`.
+    """
+    Load a JSON or YAML file.  parse_type defaults to the file extension.
+    Multi-document YAML returns a list; single-document returns the object directly.
     """
     if parse_type is None:
         parse_type = _ext_to_type(path)
@@ -78,22 +85,21 @@ def load(path: str, parse_type: Optional[str] = None) -> Any:
     if parse_type in ("yaml", "yml"):
         with open_s(path, "r", encoding="utf-8") as f:
             docs = list(yaml.safe_load_all(f))
-            if len(docs) == 0:
-                return None
-            if len(docs) == 1:
-                return docs[0]
-            return docs
+        if len(docs) == 0:
+            return None
+        return docs[0] if len(docs) == 1 else docs
 
     if parse_type == "json":
         with open_s(path, "r", encoding="utf-8") as f:
             return json.load(f)
 
-    raise TypeError(f"Unsupported parse type: {parse_type}")
+    raise TypeError(f"Unsupported parse type: {parse_type!r}")
 
 
-def get_cur_ip():
+def get_cur_ip() -> str:
+    """Return the first non-loopback, non-docker IPv4 address, or empty string."""
     for interface, addrs in psutil.net_if_addrs().items():
-        if any(interface.startswith(prefix) for prefix in ("docker", "lo")):
+        if any(interface.startswith(p) for p in ("docker", "lo")):
             continue
         for addr in addrs:
             if addr.family == socket.AF_INET and not addr.address.startswith("127"):
@@ -101,16 +107,17 @@ def get_cur_ip():
     return ""
 
 
-def func_timeout(timeout, func, *args, **kwargs):
-    def handler(signum, frame):
-        raise TimeoutError(
-            f"Function '{func.__qualname__}' timed out after {timeout} seconds."
-        )
-
-    signal.signal(signal.SIGALRM, handler)
-    signal.alarm(timeout)
-
-    try:
-        return func(*args, **kwargs)
-    finally:
-        signal.alarm(0)
+def func_timeout(timeout: int, func, *args, **kwargs):
+    """
+    Run *func* with a wall-clock timeout using a thread pool.
+    Works on all platforms and in any thread (unlike SIGALRM).
+    Raises TimeoutError if the function does not complete in time.
+    """
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(func, *args, **kwargs)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            raise TimeoutError(
+                f"Function {func.__qualname__!r} timed out after {timeout}s"
+            )

@@ -38,10 +38,11 @@ class Expr(Node):
     __slots__ = ("lineno", "col_offset")
 
     def __init__(self, lineno: int, col_offset: int):
-        super().__init__()
         self.lineno = lineno
         self.col_offset = col_offset
 
+
+# --- Mod subclasses ---
 
 class Document(Mod):
     pass
@@ -60,15 +61,18 @@ class Dependency(Mod):
 
 
 class Partition(Mod):
-    __slots__ = ("target",) + Mod.__slots__
+    # Only declare fields not already in Mod.__slots__
+    __slots__ = ("target",)
 
     def __init__(self, target, body):
         super().__init__(body)
         self.target = target
 
 
+# --- Stmt subclasses ---
+
 class Assign(Stmt):
-    __slots__ = ("target", "value") + Stmt.__slots__
+    __slots__ = ("target", "value")
 
     def __init__(self, lineno, col_offset, target, value):
         super().__init__(lineno, col_offset)
@@ -77,7 +81,7 @@ class Assign(Stmt):
 
 
 class Desc(Stmt):
-    __slots__ = ("target", "desc", "parse_type") + Stmt.__slots__
+    __slots__ = ("target", "desc", "parse_type")
 
     def __init__(self, lineno, col_offset, target, desc, parse_type):
         super().__init__(lineno, col_offset)
@@ -87,7 +91,7 @@ class Desc(Stmt):
 
 
 class For(Stmt):
-    __slots__ = ("target", "it", "body") + Stmt.__slots__
+    __slots__ = ("target", "it", "body")
 
     def __init__(self, lineno, col_offset, target, it, body):
         super().__init__(lineno, col_offset)
@@ -97,7 +101,7 @@ class For(Stmt):
 
 
 class If(Stmt):
-    __slots__ = ("test", "body", "orelse") + Stmt.__slots__
+    __slots__ = ("test", "body", "orelse")
 
     def __init__(self, lineno, col_offset, test, body, orelse=None):
         super().__init__(lineno, col_offset)
@@ -107,7 +111,7 @@ class If(Stmt):
 
 
 class Rule(Stmt):
-    __slots__ = ("test", "msg", "severity") + Stmt.__slots__
+    __slots__ = ("test", "msg", "severity")
 
     def __init__(self, lineno, col_offset, test, msg, severity):
         super().__init__(lineno, col_offset)
@@ -117,15 +121,18 @@ class Rule(Stmt):
 
 
 class Break(Stmt):
-    pass
+    # Inherits lineno/col_offset from Stmt; must call super().__init__
+    __slots__ = ()
 
 
 class Continue(Stmt):
-    pass
+    __slots__ = ()
 
+
+# --- Expr subclasses ---
 
 class UnaryOp(Expr):
-    __slots__ = ("op", "operand") + Expr.__slots__
+    __slots__ = ("op", "operand")
 
     def __init__(self, lineno, col_offset, op, operand):
         super().__init__(lineno, col_offset)
@@ -134,7 +141,7 @@ class UnaryOp(Expr):
 
 
 class BinOp(Expr):
-    __slots__ = ("left", "op", "right") + Expr.__slots__
+    __slots__ = ("left", "op", "right")
 
     def __init__(self, lineno, col_offset, left, op, right):
         super().__init__(lineno, col_offset)
@@ -144,7 +151,7 @@ class BinOp(Expr):
 
 
 class Compare(Expr):
-    __slots__ = ("left", "op", "comparator") + Expr.__slots__
+    __slots__ = ("left", "op", "comparator")
 
     def __init__(self, lineno, col_offset, left, op, comparator):
         super().__init__(lineno, col_offset)
@@ -154,7 +161,7 @@ class Compare(Expr):
 
 
 class Call(Expr):
-    __slots__ = ("func", "args", "keywords") + Expr.__slots__
+    __slots__ = ("func", "args", "keywords")
 
     def __init__(self, lineno, col_offset, func, args, keywords):
         super().__init__(lineno, col_offset)
@@ -164,7 +171,7 @@ class Call(Expr):
 
 
 class Name(Expr):
-    __slots__ = ("id",) + Expr.__slots__
+    __slots__ = ("id",)
 
     def __init__(self, lineno, col_offset, id_):
         super().__init__(lineno, col_offset)
@@ -172,11 +179,10 @@ class Name(Expr):
 
 
 class DictPath(Expr):
-    __slots__ = ("namespace", "path") + Expr.__slots__
+    __slots__ = ("namespace", "path")
 
     def __init__(self, lineno, col_offset, path):
         super().__init__(lineno, col_offset)
-
         ns_symbol = "::"
         if ns_symbol not in path:
             self.namespace = None
@@ -186,7 +192,7 @@ class DictPath(Expr):
 
 
 class List(Expr):
-    __slots__ = ("elts",) + Expr.__slots__
+    __slots__ = ("elts",)
 
     def __init__(self, lineno, col_offset, elts):
         super().__init__(lineno, col_offset)
@@ -194,7 +200,7 @@ class List(Expr):
 
 
 class Dict(Expr):
-    __slots__ = ("keys", "values") + Expr.__slots__
+    __slots__ = ("keys", "values")
 
     def __init__(self, lineno, col_offset, keys, values):
         super().__init__(lineno, col_offset)
@@ -203,7 +209,7 @@ class Dict(Expr):
 
 
 class Constant(Expr):
-    __slots__ = ("value",) + Expr.__slots__
+    __slots__ = ("value",)
 
     def __init__(self, lineno, col_offset, value):
         super().__init__(lineno, col_offset)

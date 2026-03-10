@@ -19,14 +19,13 @@ import shutil
 import sys
 import time
 import unittest
-
 from typing import Set
 
 from colorama import Fore, Style
 
 from . import _ast
 from .util import Severity
-from .visitor import _ExpressionEvaluator, ASTFormatter
+from .visitor import ASTFormatter, _ExpressionEvaluator, _make_partition_resolver
 
 
 class LogCollector(logging.Handler):
@@ -60,49 +59,49 @@ WarningCollector = LogCollector
 
 
 class RuleAssertionError(AssertionError):
-    def __init__(self, rule_node, history):
+    """Carries the failed Rule node and the evaluator's variable history."""
+
+    def __init__(self, rule_node: _ast.Rule, history: list):
         super().__init__()
         self.rule_node = rule_node
         self.history = history
 
-        self.pretty_formatter = ASTFormatter()
-
-    def build_err_msg(self):
+    def build_err_msg(self) -> str:
         indent = len(self.rule_node.severity.value) + 2
-        lines = []
-
-        test = self.pretty_formatter.visit(self.rule_node.test)
-        lines.append(">".ljust(indent) + test)
-        lines.append("")
+        formatter = ASTFormatter()
+        lines = [
+            ">".ljust(indent) + formatter.visit(self.rule_node.test),
+            "",
+        ]
         for k, v in self.history:
-            if isinstance(v, tuple):
-                line = f"{k} -> {v[1]} -> {v[0]}"
-            else:
-                line = f"{k} -> {v}"
-
+            line = f"{k} -> {v[1]} -> {v[0]}" if isinstance(v, tuple) else f"{k} -> {v}"
             lines.append("E".ljust(indent) + line)
-        lines.append("")
-        lines.append(f"{self.rule_node.severity} {self.rule_node.msg}")
+        lines += ["", f"{self.rule_node.severity} {self.rule_node.msg}"]
         return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Custom test result / runner
+# ---------------------------------------------------------------------------
+
 class RuleTestResult(unittest.TestResult):
-    def __init__(
-        self,
-        stream=None,
-        descriptions=None,
-        verbosity=False,
-        total_cnt=None,
-        failfast=False,
-    ):
-        super().__init__(stream=stream, descriptions=descriptions, verbosity=verbosity)
+    _COLOR = {
+        ".": Fore.GREEN,  "PASSED":  Fore.GREEN,
+        "F": Fore.RED,    "FAILED":  Fore.RED,
+        "E": Fore.RED,    "ERROR":   Fore.RED,
+        "s": Fore.YELLOW, "SKIPPED": Fore.YELLOW,
+    }
+
+    def __init__(self, stream=None, descriptions=None, verbosity=False,
+                 total_cnt=None, failfast=False):
+        super().__init__(stream=stream, descriptions=descriptions,
+                         verbosity=verbosity)
         if stream is None:
             stream = unittest.runner._WritelnDecorator(sys.stderr)
         self.stream = stream
         self.verbosity = verbosity
         self.total_cnt = total_cnt
         self.failfast = failfast
-
         self._cols = shutil.get_terminal_size()[0]
         self._status_chars = []
         self._colorcode_map = {
@@ -118,58 +117,35 @@ class RuleTestResult(unittest.TestResult):
             "WARNING": Fore.YELLOW,
         }
         self._log_messages = []  # Store log messages to display at the end
+        self._status_chars: list[str] = []
 
-    def startTestRun(self):
-        self.stream.writeln()
-
-    def stopTestRun(self):
-        self.stream.writeln()
+    def startTestRun(self):  self.stream.writeln()
+    def stopTestRun(self):   self.stream.writeln()
 
     def addError(self, test, err):
-        if self.verbosity:
-            self._update_verbose(test, "ERROR")
-        else:
-            self._update(test, "E")
-
+        self._tick(test, "ERROR" if self.verbosity else "E")
         return super().addError(test, err)
 
     def addFailure(self, test, err):
         super().addFailure(test, err)
-        # change to store test instance and err instance instead
-        self.failures.pop()
-        self.failures.append((test, err[1]))
-
-        if self.verbosity:
-            self._update_verbose(test, "FAILED")
-        else:
-            self._update(test, "F")
+        # Replace (test, traceback_str) with (test, RuleAssertionError instance)
+        self.failures[-1] = (test, err[1])
+        self._tick(test, "FAILED" if self.verbosity else "F")
 
     def addSuccess(self, test):
-        if self.verbosity:
-            self._update_verbose(test, "PASSED")
-        else:
-            self._update(test, ".")
+        self._tick(test, "PASSED" if self.verbosity else ".")
         return super().addSuccess(test)
 
     def addSkip(self, test, reason):
-        if self.verbosity:
-            self._update_verbose(test, "SKIPPED")
-        else:
-            self._update(test, "s")
+        self._tick(test, "SKIPPED" if self.verbosity else "s")
         return super().addSkip(test, reason)
 
     def addExpectedFailure(self, test, err):
-        if self.verbosity:
-            self._update_verbose(test, "EXPECTEDFAILED")
-        else:
-            self._update(test, "x")
+        self._tick(test, "EXPECTEDFAILED" if self.verbosity else "x")
         return super().addExpectedFailure(test, err)
 
     def addUnexpectedSuccess(self, test):
-        if self.verbosity:
-            self._update_verbose(test, "UNEXPECTEDPASSED")
-        else:
-            self._update(test, "U")
+        self._tick(test, "UNEXPECTEDPASSED" if self.verbosity else "U")
         return super().addUnexpectedSuccess(test)
 
     def addLogMessage(self, message):
@@ -185,27 +161,23 @@ class RuleTestResult(unittest.TestResult):
             self.stream.writeln(" ERRORS ".center(self._cols, "="))
             for test, exc in self.errors:
                 self.stream.writeln(
-                    f"{Fore.RED}"
-                    + f" {test.id()} ".center(self._cols, "_")
-                    + f"{Fore.RESET}"
+                    f"{Fore.RED} {test.id()} ".center(self._cols, "_") + Fore.RESET
                 )
                 self.stream.writeln()
                 self.stream.write(str(exc))
+
         if self.failures:
             self.stream.writeln(" FAILURES ".center(self._cols, "="))
-            for test, err in sorted(
-                self.failures, key=lambda item: item[1].rule_node.severity, reverse=True
-            ):
-                color_code = (
-                    err.rule_node.severity.color_code
-                )  # Keep the same color as the severity
+            for test, err in sorted(self.failures,
+                                     key=lambda x: x[1].rule_node.severity,
+                                     reverse=True):
+                cc = err.rule_node.severity.color_code
                 self.stream.writeln(
-                    f"{color_code}"
-                    + f" {test.id()} ".center(self._cols, "_")
-                    + f"{Fore.RESET}"
+                    f"{cc} {test.id()} ".center(self._cols, "_") + Fore.RESET
                 )
                 self.stream.writeln()
                 self.stream.writeln(err.build_err_msg())
+
         self.stream.writeln()
         self.stream.flush()
 
@@ -226,74 +198,61 @@ class RuleTestResult(unittest.TestResult):
 
     def _update(self, test, ch):
         PERCENT_PADDING = 1
+    # -- internal tick -------------------------------------------------------
 
-        color_code = self._colorcode_map.get(ch, Fore.RESET)
-        self._status_chars.append(f"{color_code}{ch}{Fore.RESET}")
+    def _tick(self, test, label: str):
+        if self.verbosity:
+            self._tick_verbose(test, label)
+        else:
+            self._tick_compact(test, label)
 
-        namespace = test.namespace
+    def _tick_compact(self, test, ch: str):
+        PERCENT_PAD = 1
+        color = self._COLOR.get(ch, Fore.RESET)
+        self._status_chars.append(f"{color}{ch}{Fore.RESET}")
 
         total = self.total_cnt or 1
-        percent = int(100 * (self.testsRun / total))
-        percent_str = f"[{percent:3d}%]"
-        percent_width = len(percent_str) + PERCENT_PADDING
-        colored_percent_str = f"{color_code}{percent_str}{Fore.RESET}"
+        pct = int(100 * self.testsRun / total)
+        pct_str = f"[{pct:3d}%]"
+        pct_width = len(pct_str) + PERCENT_PAD
+        colored_pct = f"{color}{pct_str}{Fore.RESET}"
 
-        header = f"{namespace} "
-        # use raw lengths for layout (colored sequences are invisible width-wise)
-        visible_len = len(header) + len(self._status_chars)
-        available_space = self._cols - visible_len - percent_width
+        header = f"{test.namespace} "
+        visible = len(header) + len(self._status_chars)
+        space = self._cols - visible - pct_width
 
-        if available_space > 0:
-            status_disp = "".join(self._status_chars)
-            pad = " " * available_space
-            line = f"{header}{status_disp}{pad}{colored_percent_str}"
+        if space > 0:
+            line = f"{header}{''.join(self._status_chars)}{' ' * space}{colored_pct}"
         else:
-            # if line too long, truncate raw status and recompute display
-            overflow = -available_space
-            if overflow >= len(self._status_chars):
-                trimmed_disp = ""
-            else:
-                trimmed_disp = self._status_chars[:-overflow]
-            line = f"{header}{trimmed_disp} {colored_percent_str}"
+            trimmed = self._status_chars[:max(0, len(self._status_chars) + space)]
+            line = f"{header}{''.join(trimmed)} {colored_pct}"
 
         self.stream.write(f"\r{line}")
         self.stream.flush()
 
-    def _update_verbose(self, test, status_word):
-        MIN_COLUMNS = 10
-        ELLIPSIS = "..."
-        STATUS_PADDING = 1
-        PERCENT_PADDING = 1
-
-        namespace = test.namespace
-        color_code = self._colorcode_map.get(status_word, Fore.RESET)
+    def _tick_verbose(self, test, status: str):
+        ELLIPSIS, STATUS_PAD, PERCENT_PAD, MIN_COLS = "...", 1, 1, 10
+        color = self._COLOR.get(status, Fore.RESET)
 
         total = self.total_cnt or 1
-        percent = int(100 * (self.testsRun / total))
-        percent_str = f"[{percent:3d}%]"
-        percent_width = len(percent_str) + PERCENT_PADDING
-        colored_percent_str = f"{color_code}{percent_str}{Fore.RESET}"
+        pct = int(100 * self.testsRun / total)
+        pct_str = f"[{pct:3d}%]"
+        pct_width = len(pct_str) + PERCENT_PAD
+        colored_pct = f"{color}{pct_str}{Fore.RESET}"
 
-        available_space = max(self._cols - percent_width, MIN_COLUMNS)
-
-        status_width = len(status_word) + STATUS_PADDING
-        test_id_width = max(0, available_space - status_width)
+        space = max(self._cols - pct_width, MIN_COLS)
+        status_w = len(status) + STATUS_PAD
+        id_w = max(0, space - status_w)
 
         test_id = test.id()
-        if len(test_id) > test_id_width:
-            if test_id_width <= len(ELLIPSIS):
-                test_id = test_id[:test_id_width]
-            else:
-                test_id = test_id[: test_id_width - len(ELLIPSIS)] + ELLIPSIS
+        if len(test_id) > id_w:
+            test_id = (test_id[:id_w - len(ELLIPSIS)] + ELLIPSIS
+                       if id_w > len(ELLIPSIS) else test_id[:id_w])
 
-        uncolored_line = f"{namespace}::{test_id} {status_word}"
-        padding = max(0, available_space - len(uncolored_line))
-
-        colored_status = f"{color_code}{status_word}{Fore.RESET}"
-        colored_line = f"{namespace}::{test_id} {colored_status}"
-
-        line = f"{colored_line}{' ' * padding} {colored_percent_str}"
-
+        raw = f"{test.namespace}::{test_id} {status}"
+        pad = max(0, space - len(raw))
+        line = (f"{test.namespace}::{test_id} "
+                f"{color}{status}{Fore.RESET}{' ' * pad} {colored_pct}")
         self.stream.writeln(line)
         self.stream.flush()
 
@@ -305,10 +264,8 @@ class RuleTestRunner:
         if stream is None:
             stream = sys.stderr
         self.stream = unittest.runner._WritelnDecorator(stream)
-
         if rescls is not None:
             self.rescls = rescls
-
         self.verbosity = verbosity
         self.failfast = failfast
         self._log_collector = LogCollector()
@@ -340,129 +297,115 @@ class RuleTestRunner:
     def run(self, suite):
         total = suite.countTestCases()
         res = self.rescls(
-            stream=self.stream,
-            verbosity=self.verbosity,
-            total_cnt=total,
-            failfast=self.failfast,
+            stream=self.stream, verbosity=self.verbosity,
+            total_cnt=total, failfast=self.failfast,
         )
         cols = shutil.get_terminal_size()[0]
-
         self.stream.writeln(f"{Style.BRIGHT}collected {total} items{Style.RESET_ALL}")
+
         if total == 0:
             self.stream.writeln()
             self.stream.writeln(
-                f"{Fore.YELLOW}{' no tests ran in 0.00s '.center(cols, '=')}{Fore.RESET}"
+                f"{Fore.YELLOW}"
+                + " no tests ran in 0.00s ".center(cols, "=")
+                + Fore.RESET
             )
             self.stream.flush()
             return res
 
         t0 = time.perf_counter()
-        start_run = getattr(res, "startTestRun", None)
-        if start_run is not None:
-            start_run()
+        getattr(res, "startTestRun", lambda: None)()
         try:
             suite(res)
         finally:
-            stop_run = getattr(res, "stopTestRun", None)
-            if stop_run is not None:
-                stop_run()
+            getattr(res, "stopTestRun", lambda: None)()
         elapsed = time.perf_counter() - t0
         self._transfer_logs_to_result(res)
+
         res.printErrors()
         res.printLogMessages()
 
-        counters = [
-            ("errors", "errors"),
-            ("failures", "failed"),
-            ("expectedFailures", "expected failures"),
+        _COUNTERS = [
+            ("errors",              "errors"),
+            ("failures",            "failed"),
+            ("expectedFailures",    "expected failures"),
             ("unexpectedSuccesses", "unexpected successes"),
-            ("skipped", "skipped"),
+            ("skipped",             "skipped"),
         ]
-
-        count_data = [
+        counts = [
             (getattr(res, attr), label)
-            for attr, label in counters
+            for attr, label in _COUNTERS
             if getattr(res, attr)
         ]
-
-        summary_parts = [f"{len(counter)} {label}" for counter, label in count_data]
-        failed_total = sum(len(counter) for counter, _ in count_data)
-        num_passed = res.testsRun - failed_total
-
-        passed_text = f"{num_passed} passed" if num_passed else "no passed"
-        summary = f" {', '.join(summary_parts + [passed_text])} in {elapsed:.3f}s "
-
-        term_color = Fore.GREEN if num_passed == res.testsRun else Fore.RED
-        self.stream.writeln(f"{term_color}{summary.center(cols, '=')}{Fore.RESET}")
+        failed_total = sum(len(c) for c, _ in counts)
+        passed = res.testsRun - failed_total
+        parts = [f"{len(c)} {lbl}" for c, lbl in counts]
+        parts.append(f"{passed} passed" if passed else "no passed")
+        summary = f" {', '.join(parts)} in {elapsed:.3f}s "
+        color = Fore.GREEN if passed == res.testsRun else Fore.RED
+        self.stream.writeln(f"{color}{summary.center(cols, '=')}{Fore.RESET}")
         self.stream.flush()
-
         return res
 
 
-def make_test_suite(data_source, ruleset, msprechecker_output):
-    test_suite = unittest.TestSuite()
-    test_loader = unittest.TestLoader()
+# ---------------------------------------------------------------------------
+# Test suite factory
+# ---------------------------------------------------------------------------
 
-    extra_attrs = {
-        "evaluator": _ExpressionEvaluator(data_source),
-        "data_source": data_source,
+def make_test_suite(data_source, ruleset: dict, output: dict):
+    """
+    Build a unittest.TestSuite from *ruleset*.
+
+    Each namespace becomes a TestCase class; each Rule becomes a test method.
+    *output* is populated in-place with structured results for JSON export.
+    """
+    suite = unittest.TestSuite()
+    loader = unittest.TestLoader()
+
+    for namespace, rule_nodes in ruleset.items():
+        cls = _build_test_case(namespace, rule_nodes, data_source, output)
+        suite.addTest(loader.loadTestsFromTestCase(cls))
+
+    return suite
+
+
+def _build_test_case(namespace: str, rule_nodes: Set[_ast.Rule],
+                     data_source, output: dict):
+    """Dynamically create a TestCase class for one partition namespace."""
+
+    resolver = _make_partition_resolver(namespace, data_source, [])
+    evaluator = _ExpressionEvaluator(data_source, resolver)
+
+    methods = {
+        f"test_{rule.lineno}": _build_test_method(rule, namespace, evaluator, output)
+        for rule in rule_nodes
     }
-
-    for namespace in ruleset:
-        test_case_cls_name = f"Test-{namespace}"
-        rule_nodes = ruleset[namespace]
-        test_case_cls = _make_test_case(
-            test_case_cls_name, rule_nodes, namespace, msprechecker_output
-        )
-
-        # add extra attrs to test cls
-        extra_attrs["namespace"] = namespace
-        for name, value in extra_attrs.items():
-            setattr(test_case_cls, name, value)
-
-        suite = test_loader.loadTestsFromTestCase(test_case_cls)
-        test_suite.addTest(suite)
-
-    return test_suite
+    cls = type(f"Test-{namespace}", (unittest.TestCase,), methods)
+    cls.namespace = namespace
+    cls.data_source = data_source
+    return cls
 
 
-def _make_test_case(
-    cls_name, rule_nodes: Set[_ast.Rule], namespace, msprechecker_output
-):
-    cls_dict = {
-        f"test_{rule_node.lineno}": _make_test_method(
-            rule_node, namespace, msprechecker_output
-        )
-        for rule_node in rule_nodes
-    }
-    test_case_cls = type(cls_name, (unittest.TestCase,), cls_dict)
-
-    return test_case_cls
-
-
-def _make_test_method(rule_node: _ast.Rule, namespace, msprechecker_output):
-    severity_dict = {
-        Severity.INFO: "info",
-        Severity.WARNING: "warning",
-        Severity.ERROR: "error",
-    }
-    result_dict = {True: "passed", False: "failed"}
+def _build_test_method(rule: _ast.Rule, namespace: str,
+                        evaluator: _ExpressionEvaluator, output: dict):
+    _SEV = {Severity.INFO: "info", Severity.WARNING: "warning", Severity.ERROR: "error"}
+    _RES = {True: "passed", False: "failed"}
+    formatter = ASTFormatter()
 
     def test(inst):
-        par = namespace
-        pretty_formatter = ASTFormatter()
-        test_rule = pretty_formatter.visit(rule_node.test)
-        test_result = inst.evaluator.evaluate(rule_node.test)
-        test_history = inst.evaluator.history
-        result_entry = {
-            "test": test_rule,
-            "msg": rule_node.msg,
-            "severity": severity_dict.get(rule_node.severity),
-            "status": result_dict.get(test_result),
-            "metadata": dict(test_history),
-        }
-        msprechecker_output.setdefault(par, []).append(result_entry)
-        if not test_result:
-            raise RuleAssertionError(rule_node, test_history)
+        test_expr = formatter.visit(rule.test)
+        result = evaluator.evaluate(rule.test)
+        history = evaluator.history
+
+        output.setdefault(namespace, []).append({
+            "test":     test_expr,
+            "msg":      rule.msg,
+            "severity": _SEV[rule.severity],
+            "status":   _RES[result],
+            "metadata": dict(history),
+        })
+
+        if not result:
+            raise RuleAssertionError(rule, history)
 
     return test

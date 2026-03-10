@@ -1,31 +1,14 @@
-# -------------------------------------------------------------------------
-# This file is part of the MindStudio project.
-# Copyright (c) 2025-2026 Huawei Technologies Co.,Ltd.
-#
-# MindStudio is licensed under Mulan PSL v2.
-# You can use this software according to the terms and conditions of the Mulan PSL v2.
-# You may obtain a copy of Mulan PSL v2 at:
-#
-#          `http://license.coscl.org.cn/MulanPSL2`
-#
-# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-# See the Mulan PSL v2 for more details.
-# -------------------------------------------------------------------------
-
+import builtins as _builtins
 import inspect
 import logging
 import operator
 import os
 import re
 from collections import defaultdict
-from copy import deepcopy
-
-from msguard.security import open_s
+from typing import Optional, Tuple
 
 from . import _ast, custom_fn
-from .data_source import NA
+from .data_source import NA, DataSource
 from .util import func_timeout, Severity
 
 
@@ -37,21 +20,22 @@ class CMateError(Exception):
 
 
 class NodeVisitor:
+    """
+    Dispatch visit(node) to visit_<classname>(node).
+    Falls back to generic_visit which recurses into child nodes.
+    """
+
     def visit(self, node):
         if node is None:
             return None
-
-        method_name = f"visit_{node.__class__.__name__.lower()}"
-        visitor = getattr(self, method_name, self.generic_visit)
-        return visitor(node)
+        method = f"visit_{type(node).__name__.lower()}"
+        return getattr(self, method, self.generic_visit)(node)
 
     def generic_visit(self, node):
         if node is None or not hasattr(node, "__slots__"):
             return None
-
         for attr in node.__slots__:
             val = getattr(node, attr, None)
-
             if isinstance(val, _ast.Node):
                 self.visit(val)
             elif isinstance(val, list):
@@ -61,589 +45,555 @@ class NodeVisitor:
 
 
 class _ExpressionEvaluator(NodeVisitor):
-    def __init__(self, data_source):
-        self.data_source = data_source
-        self.op_map = {
-            "<": operator.lt,
-            "<=": operator.le,
-            ">": operator.gt,
-            ">=": operator.ge,
-            "==": operator.eq,
-            "!=": operator.ne,
-            "=~": lambda a, b: func_timeout(3, re.search, b, a),
-            "or": lambda a, b: a or b,
-            "in": lambda a, b: a in b,
-            "and": lambda a, b: a and b,
-            "not in": lambda a, b: a not in b,
-            "*": operator.mul,
-            "+": operator.add,
-            "-": operator.sub,
-            "/": operator.truediv,
-            "//": operator.floordiv,
-            "%": operator.mod,
-            "**": operator.pow,
-        }
-        self.builtin_fn = {
-            "int": int,
-            "float": float,
-            "bool": bool,
-            "str": str,
-            "list": list,
-            "tuple": tuple,
-            "set": set,
-            "len": len,
-            "range": range,
-            "sum": sum,
-            "min": min,
-            "max": max,
-        }
-        self.func_map = {**self.builtin_fn, **self._load_custom_fn()}
-        self.history = None
+    """
+    Evaluate an expression AST node to a Python value.
+
+    Namespace resolution is provided by a *resolver* callable rather than
+    mutating DictPath nodes, so the AST stays immutable.
+
+        resolver(namespace: str | None, path: str) -> str
+            Returns the fully-qualified 'ns::path' key to look up in data_source.
+    """
+
+    _BINARY_OPS = {
+        "<":    operator.lt,
+        "<=":   operator.le,
+        ">":    operator.gt,
+        ">=":   operator.ge,
+        "==":   operator.eq,
+        "!=":   operator.ne,
+        "=~":   lambda a, b: func_timeout(3, re.search, b, a),
+        "or":   lambda a, b: a or b,
+        "and":  lambda a, b: a and b,
+        "in":       lambda a, b: a in b,
+        "not in":   lambda a, b: a not in b,
+        "+":    operator.add,
+        "-":    operator.sub,
+        "*":    operator.mul,
+        "/":    operator.truediv,
+        "//":   operator.floordiv,
+        "%":    operator.mod,
+        "**":   operator.pow,
+    }
+
+    _UNARY_OPS = {
+        "not": operator.not_,
+    }
+
+    _BUILTIN_FN = {
+        name: getattr(_builtins, name)
+        for name in ("int", "float", "bool", "str", "list", "tuple",
+                     "set", "len", "range", "sum", "min", "max")
+    }
+
+    def __init__(self, data_source: DataSource, resolver=None):
+        self._data_source = data_source
+        # resolver(namespace, path) -> canonical 'ns::path' string
+        self._resolver = resolver or self._default_resolver
+        self._func_map = {**self._BUILTIN_FN, **self._load_custom_fn()}
+        self.history: list = []
 
     @staticmethod
-    def _load_custom_fn():
-        custom_fn_map = {}
+    def _default_resolver(namespace, path) -> str:
+        ns = namespace if namespace is not None else "global"
+        return f"{ns}::{path}"
+
+    @staticmethod
+    def _load_custom_fn() -> dict:
+        result = {}
         for name in dir(custom_fn):
+            if name.startswith("_"):
+                continue
             obj = getattr(custom_fn, name)
+            if inspect.isfunction(obj) and obj.__module__ == custom_fn.__name__:
+                result[name] = obj
+        return result
 
-            if (
-                inspect.isfunction(obj)
-                and not name.startswith("_")
-                and obj.__module__ == custom_fn.__name__
-            ):
-                custom_fn_map[name] = obj
-
-        return custom_fn_map
+    # -- visit methods -------------------------------------------------------
 
     def visit_name(self, node: _ast.Name):
         raise CMateError(
-            f"Direct variable reference is not allowed at line {node.lineno}, column {node.col_offset}. "
-            f"To reference a variable in CMATE expressions, you must use the interpolation syntax: ${{{node.id}}}\n\n"
+            f"Direct variable reference is not allowed at line {node.lineno}, "
+            f"column {node.col_offset}. "
+            f"Use the interpolation syntax: ${{{node.id}}}"
         )
 
     def visit_constant(self, node: _ast.Constant):
         return node.value
 
     def visit_dictpath(self, node: _ast.DictPath):
-        namespace = node.namespace
-        if namespace is None:
-            namespace = "global"
-
-        path = f"{namespace}::{node.path}"
-        val = self.data_source[path]
-
-        self.history.append((path, val))
+        key = self._resolver(node.namespace, node.path)
+        val = self._data_source[key]
+        self.history.append((key, val))
         return val[0] if isinstance(val, tuple) else val
 
     def visit_list(self, node: _ast.List):
         return [self.visit(elt) for elt in node.elts]
 
     def visit_dict(self, node: _ast.Dict):
-        keys = [self.visit(key) for key in node.keys]
-        values = [self.visit(value) for value in node.values]
-
-        return dict(zip(keys, values))
+        return dict(zip(
+            (self.visit(k) for k in node.keys),
+            (self.visit(v) for v in node.values),
+        ))
 
     def visit_compare(self, node: _ast.Compare):
-        op = self.op_map[node.op]
-        left = self.visit(node.left)
-        comparator = self.visit(node.comparator)
-
-        return op(left, comparator)
-
-    def visit_call(self, node: _ast.Call):
-        func_name = node.func.id
-        func = self.func_map.get(func_name)
-        if func is None:
-            raise CMateError(
-                f"Undefined function '{func_name}' is found at line {node.lineno}, column {node.col_offset}. "
-                "You should implement it yourself by adding it to `custom_fn.py`."
-            )
-
-        args = [self.visit(arg) for arg in node.args]
-        return func(*args)
-
-    def visit_unaryop(self, node: _ast.UnaryOp):
-        op = self.op_map[node.op]
-        operand = self.visit(node.operand)
-
-        return op(operand)
+        op = self._BINARY_OPS[node.op]
+        return op(self.visit(node.left), self.visit(node.comparator))
 
     def visit_binop(self, node: _ast.BinOp):
-        op = self.op_map[node.op]
-        left = self.visit(node.left)
-        right = self.visit(node.right)
+        op = self._BINARY_OPS[node.op]
+        return op(self.visit(node.left), self.visit(node.right))
 
-        return op(left, right)
+    def visit_unaryop(self, node: _ast.UnaryOp):
+        op = self._UNARY_OPS.get(node.op)
+        if op is None:
+            raise CMateError(f"Unknown unary operator: {node.op!r}")
+        return op(self.visit(node.operand))
+
+    def visit_call(self, node: _ast.Call):
+        func = self._func_map.get(node.func.id)
+        if func is None:
+            raise CMateError(
+                f"Undefined function {node.func.id!r} at line {node.lineno}, "
+                f"column {node.col_offset}. "
+                "Add it to `custom_fn.py` to use it."
+            )
+        return func(*(self.visit(a) for a in node.args))
+
+    # -- public entry point --------------------------------------------------
 
     def evaluate(self, node: _ast.Node):
         self.history = []
         return self.visit(node)
 
 
-class InfoCollector(NodeVisitor):
-    def __init__(self) -> None:
-        self._metadata_map = {}
-        self._dependency_map = {}
-        self._partition_map = {}
-        self._context_map = defaultdict(set)
+class _StatementExecutor(NodeVisitor):
+    """
+    Abstract base for visitors that *execute* statement nodes (For, If,
+    Break, Continue).  Subclasses override visit_assign or visit_rule;
+    everything else is handled here once.
 
-        self._required_targets = None
-        self._required_contexts = None
+    No AST mutation: DictPath namespace resolution is done via
+    _make_resolver(), which returns a closure capturing current scope.
+    """
 
-    def visit_meta(self, node: _ast.Meta):
-        if self._metadata_map:
-            logger.warning(
-                "Multiple metadata declarations found. "
-                "Previous declaration will be overwritten."
-            )
-            self._metadata_map = {}
-
-        for assign_node in node.body:
-            target_node = assign_node.target
-            value_node = assign_node.value
-            self._metadata_map[target_node.id] = self._retrieve_value(value_node)
-
-    def visit_dependency(self, node: _ast.Dependency):
-        if self._dependency_map:
-            logger.warning(
-                "Multiple dependency declarations found. "
-                "Previous declaration will be overwritten."
-            )
-            self._dependency_map = {}
-
-        for desc_node in node.body:
-            name = desc_node.target.id
-
-            if name in self._dependency_map:
-                logger.warning(
-                    "Name '%s' is redefined at line %d, column %d. "
-                    "Previous definition will be overwritten.",
-                    name,
-                    desc_node.lineno,
-                    desc_node.col,
-                )
-
-            self._dependency_map[name] = (desc_node.desc, desc_node.parse_type)
-
-    def visit_global(self, node):
-        pass
-
-    def visit_partition(self, node: _ast.Partition):
-        self._namespace = node.target.id
-
-        self._required_targets = set()
-        self._required_contexts = set()
-
-        if self._namespace in self._partition_map:
-            logger.warning(
-                "Multiple partition target %r declarations found. "
-                "Previous declaration will be overwritten.",
-                self._namespace,
-            )
-            self._partition_map[self._namespace] = {}
-
-        for rule_node in node.body:
-            self.visit(rule_node)
-
-        if self._namespace != "env" and self._namespace not in self._dependency_map:
-            logger.warning(
-                "Partition target %r not found in dependency map", self._namespace
-            )
-
-        desc, parse_type = self._dependency_map.get(self._namespace, (None, None))
-
-        self._partition_map[self._namespace] = {
-            "desc": desc,
-            "parse_type": parse_type,
-            "required_targets": self._required_targets or None,
-            "required_contexts": self._required_contexts or None,
-        }
-        self._namespace = None
-        self._required_targets = None
-        self._required_contexts = None
-
-    def visit_compare(self, node: _ast.Compare):
-        if (
-            isinstance(node.left, _ast.DictPath)
-            and node.left.namespace == "context"
-            and isinstance(node.comparator, _ast.Constant)
-        ):
-            self._context_map[node.left.path].add(node.comparator.value)
-
-        self.visit(node.left)
-        self.visit(node.comparator)
-
-    def visit_dictpath(self, node: _ast.DictPath):
-        namespace = node.namespace
-
-        if namespace is None or namespace == "global":
-            return
-
-        if (
-            namespace not in {"context", "global", "env"}
-            and namespace not in self._dependency_map
-        ):
-            logger.warning(
-                "Undefined namespace '%s' referenced at line %d, column %d. "
-                "The dict path '%s::%s' is used but not defined in the dependency section. "
-                "This may cause undefined behavior. Please contact the rule provider for clarification.",
-                namespace,
-                node.lineno,
-                node.col_offset,
-                namespace,
-                node.path,
-            )
-
-        if namespace == "context":
-            self._required_contexts.add(node.path)
-        else:
-            self._required_targets.add(namespace)
-
-    def collect(self, node):
-        try:
-            self.visit(node)
-        except Exception as e:
-            raise CMateError(
-                f"CMATE configuration parsing failed at position: {str(e)}"
-            ) from e
-
-        for target in self._partition_map:
-            for required_item in ("required_targets", "required_contexts"):
-                if self._partition_map[target][required_item] is not None:
-                    self._partition_map[target][required_item] = list(
-                        self._partition_map[target][required_item]
-                    )
-
-        contexts = {
-            ctx_var: {
-                "desc": self._dependency_map.get(ctx_var),
-                "options": list(options),
-            }
-            for ctx_var, options in self._context_map.items()
-        }
-
-        return {
-            "metadata": self._metadata_map,
-            "targets": self._partition_map,
-            "contexts": contexts,
-        }
-
-    def _retrieve_value(self, node):
-        if node is None:
-            return None
-
-        if isinstance(node, _ast.Constant):
-            return node.value
-
-        if isinstance(node, _ast.List):
-            return [self._retrieve_value(elt) for elt in node.elts]
-
-        if isinstance(node, _ast.Dict):
-            keys = [self._retrieve_value(key) for key in node.keys]
-            values = [self._retrieve_value(value) for value in node.values]
-            return dict(zip(keys, values))
-
-        raise CMateError(f"Unsupported node type: {type(node).__name__}")
-
-
-class RuleCollector(NodeVisitor):
-    def __init__(self, input_configs, data_source, severity):
-        self._input_configs = input_configs
-        self._severity = Severity[severity.upper()]
+    def __init__(self, data_source: DataSource):
         self._data_source = data_source
-        self._evaluator = _ExpressionEvaluator(data_source)
-        self._pretty_formatter = ASTFormatter()
-
-        self._namespace = None
-        self._ruleset = defaultdict(set)
-        self._skip_flag = False
         self._in_loop = False
         self._break = False
         self._continue = False
-        self._loop_target = None
-        self._loop_reference = None
+        # Stack of (loop_var_name, loop_reference_label) for nested loops
+        self._loop_stack: list[tuple[str, str]] = []
 
-    def visit_meta(self, node):
-        pass
+    # -- must override -------------------------------------------------------
 
-    def visit_dependency(self, node):
-        pass
+    def _make_evaluator(self) -> _ExpressionEvaluator:
+        """Return an evaluator wired to the current resolver."""
+        raise NotImplementedError
 
-    def visit_global(self, node: _ast.Global):
-        pass
-
-    def visit_partition(self, node: _ast.Partition):
-        if node.target.id not in self._input_configs:
-            return
-
-        self._namespace = node.target.id
-
-        for rule_node in node.body:
-            self.visit(rule_node)
-
-        self._namespace = None
-
-    def visit_for(self, node: _ast.For):
-        target = node.target.id  # for xx
-        self._loop_target = target
-        it = self._evaluator.evaluate(node.it)  # in xx
-
-        if isinstance(node.it, _ast.DictPath):
-            reference = self._pretty_formatter.format(node.it)
-        else:
-            reference = f"loopvar-{node.lineno}-{node.col_offset}"
-            reference_path = f"global::{reference}"
-            self._data_source[reference_path] = it
-
-        self._in_loop = True
-        for i, item in enumerate(it):
-            self._loop_reference = f"{reference}[{i}]"
-            self._data_source.flatten("global", {target: item})
-
-            for sub_node in deepcopy(node.body):
-                self.visit(sub_node)  # next line of code
-
-                # if reach 'continue' or 'break', stop reading code
-                if self._continue or self._break:
-                    break
-
-            self._data_source.unflatten("global", {target: item})
-
-            if self._break:
-                self._break = False
-                break
-
-            if self._continue:
-                self._continue = False
-                continue
-        self._in_loop = False
-        self._loop_reference = None
+    # -- loop / branch control -----------------------------------------------
 
     def visit_if(self, node: _ast.If):
-        test = node.test
-        self.visit(test)
-
-        if self._evaluator.evaluate(test):
-            for stmt in node.body:
-                self.visit(stmt)
+        evaluator = self._make_evaluator()
+        if evaluator.evaluate(node.test):
+            self._exec_body(node.body)
         elif node.orelse:
-            for stmt in node.orelse:
-                self.visit(stmt)
+            self._exec_body(node.orelse)
 
-    def visit_rule(self, node: _ast.Rule):
-        if self._severity > node.severity:
-            return
+    def visit_for(self, node: _ast.For):
+        evaluator = self._make_evaluator()
+        loop_var = node.target.id
+        iterable = evaluator.evaluate(node.it)
 
-        self.visit(node.test)  # visit first
-        self._ruleset[self._namespace].add(node)
+        # For inline iterables store value temporarily under a generated key;
+        # clean it up in a finally block so global scope is not polluted.
+        if isinstance(node.it, _ast.DictPath):
+            ref_label = ASTFormatter().format(node.it)
+            temp_key  = None
+        else:
+            ref_label = f"__loop_{node.lineno}_{node.col_offset}__"
+            temp_key  = f"global::{ref_label}"
+            self._data_source[temp_key] = iterable
 
-    def visit_dictpath(self, node: _ast.DictPath):
-        if node.namespace is None:
-            if node.path == self._loop_target:
-                node.path = self._loop_reference
-                return
+        saved_in_loop = self._in_loop
+        self._in_loop = True
 
-            local_path = f"{self._namespace}::{node.path}"
+        try:
+            for i, item in enumerate(iterable):
+                item_ref = f"{ref_label}[{i}]"
+                self._loop_stack.append((loop_var, item_ref))
+                self._data_source.flatten("global", {loop_var: item})
 
-            if local_path in self._data_source:
-                node.namespace = self._namespace
-            else:
-                node.namespace = "global"
+                self._exec_body(node.body)
+
+                self._data_source.unflatten("global", {loop_var: item})
+                self._loop_stack.pop()
+
+                if self._break:
+                    self._break = False
+                    break
+                if self._continue:
+                    self._continue = False
+        finally:
+            self._in_loop = saved_in_loop
+            if temp_key and temp_key in self._data_source:
+                del self._data_source[temp_key]
 
     def visit_break(self, node: _ast.Break):
         if not self._in_loop:
             raise CMateError("'break' outside loop")
-
         self._break = True
 
     def visit_continue(self, node: _ast.Continue):
         if not self._in_loop:
             raise CMateError("'continue' not properly in loop")
-
         self._continue = True
 
-    def collect(self, node: _ast):
-        self.visit(node)
-        return self._ruleset
+    # -- helpers -------------------------------------------------------------
 
-
-class AssignmentProcessor(NodeVisitor):
-    def __init__(self, input_configs, data_source):
-        super().__init__()
-        self._input_configs = input_configs
-        self._data_source = data_source
-        self._evaluator = _ExpressionEvaluator(self._data_source)
-        self._pretty_formatter = ASTFormatter()
-
-        self._skip_flag = False
-        self._in_loop = False
-        self._break = False
-        self._continue = False
-        self._loop_reference = None
-
-    def visit_meta(self, node):
-        pass
-
-    def visit_dependency(self, node):
-        pass
-
-    def visit_global(self, node: _ast.Global):
-        for assign_node in node.body:
-            self.visit(assign_node)
-
-    def visit_partition(self, node: _ast.Partition):
-        pass
-
-    def visit_if(self, node: _ast.If):
-        test = node.test
-        if self._evaluator.evaluate(test):
-            for stmt in node.body:
-                self.visit(stmt)
-        elif node.orelse:
-            for stmt in node.orelse:
-                self.visit(stmt)
-
-    def visit_for(self, node: _ast.For):
-        target = node.target.id  # for xx
-        it = self._evaluator.evaluate(node.it)  # in xx
-
-        self._in_loop = True
-        for i, item in enumerate(it):
-            self._data_source.flatten("global", {target: item})
-            self._loop_reference = f"{self._pretty_formatter.format(node.it)}[{i}]"
-
-            for sub_node in node.body:
-                self.visit(sub_node)  # next line of code
-
-                # if reach 'continue' or 'break', stop reading code
-                if self._continue or self._break:
-                    break
-
-            self._data_source.unflatten("global", {target: item})
-            if self._break:
-                self._break = False
+    def _exec_body(self, stmts: list):
+        """Execute a list of statements, stopping on break/continue."""
+        for stmt in stmts:
+            self.visit(stmt)
+            if self._break or self._continue:
                 break
 
-            if self._continue:
-                self._continue = False
-                continue
-        self._in_loop = False
-        self._loop_reference = None
+    def _current_loop_var(self) -> Optional[Tuple[str, str]]:
+        """Return (loop_var_name, ref_label) for the innermost loop, or None."""
+        return self._loop_stack[-1] if self._loop_stack else None
+
+
+# ---------------------------------------------------------------------------
+# Namespace resolver factory
+# ---------------------------------------------------------------------------
+
+def _make_partition_resolver(namespace: str, data_source: DataSource,
+                              loop_stack: list):
+    """
+    Returns a resolver function for use inside a partition.
+
+    Resolution order for an unqualified path:
+      1. If the path is the current loop variable, rewrite to the indexed ref.
+      2. If 'namespace::path' exists in data_source, use that namespace.
+      3. Otherwise fall back to 'global'.
+
+    This replaces the old approach of mutating DictPath.namespace in-place.
+    """
+
+    def resolver(ns: Optional[str], path: str) -> str:
+        if ns is not None:
+            return f"{ns}::{path}"
+
+        # Check if this path is a loop variable (innermost wins)
+        for loop_var, ref_label in reversed(loop_stack):
+            if path == loop_var:
+                return f"global::{ref_label}"
+
+        local_key = f"{namespace}::{path}"
+        if local_key in data_source:
+            return local_key
+
+        return f"global::{path}"
+
+    return resolver
+
+
+# ---------------------------------------------------------------------------
+# Concrete visitors
+# ---------------------------------------------------------------------------
+
+class AssignmentProcessor(_StatementExecutor):
+    """
+    Walks the [global] section and evaluates assignments into data_source.
+    Skips partitions entirely.
+    """
+
+    def __init__(self, input_configs: dict, data_source: DataSource):
+        super().__init__(data_source)
+        self._input_configs = input_configs
+        self._formatter = ASTFormatter()
+
+    def _make_evaluator(self) -> _ExpressionEvaluator:
+        return _ExpressionEvaluator(self._data_source)
+
+    # -- section gates -------------------------------------------------------
+
+    def visit_meta(self, node):       pass
+    def visit_dependency(self, node): pass
+    def visit_partition(self, node):  pass
+
+    def visit_global(self, node: _ast.Global):
+        self._exec_body(node.body)
+
+    # -- assignments ---------------------------------------------------------
 
     def visit_assign(self, node: _ast.Assign):
-        self._skip_flag = False  # Reset skip flag
-        self.visit(node.value)
-
-        if self._skip_flag:
+        # Check whether the RHS references an unavailable namespace
+        if self._rhs_references_missing_target(node.value):
             return
 
         target = node.target.id
+        evaluator = self._make_evaluator()
         try:
-            value = self._evaluator.evaluate(node.value)
-        except Exception as e:
-            formatted_value = self._pretty_formatter.format(node.value)
+            value = evaluator.evaluate(node.value)
+        except Exception as exc:
+            formatted = self._formatter.format(node.value)
             logger.warning(
-                "Failed to assign value '%s' to target '%s' at line %d, column %d. "
-                "The assignment will be skipped.",
-                formatted_value,
-                target,
-                node.lineno,
-                node.col_offset,
-                exc_info=e,
+                "Failed to assign %r to %r at line %d, column %d – skipped.",
+                formatted, target, node.lineno, node.col_offset,
+                exc_info=exc,
             )
             return
 
-        path = f"global::{target}"
-        self._data_source.flatten("global", {target: value})  # store it first
+        self._data_source.flatten("global", {target: value})
 
-        # take care of reference
-        if self._in_loop and self._loop_reference:
-            # if loop from a temporary var, give it a unique name
-            self._data_source[path] = (value, self._loop_reference)
-        else:
-            # otherwise, use the dict path name
-            reference = self._pretty_formatter.format(node.value)
-            if reference != value:  # only stores if reference and value are different
-                self._data_source[path] = (value, reference)
+        # Store (value, reference) tuple so evaluator history is informative
+        ref = self._formatter.format(node.value)
+        if self._loop_stack:
+            _, loop_ref = self._loop_stack[-1]
+            self._data_source[f"global::{target}"] = (value, loop_ref)
+        elif ref != str(value):
+            self._data_source[f"global::{target}"] = (value, ref)
 
-    def visit_dictpath(self, node: _ast.DictPath):
-        if node.namespace in self._input_configs:
-            return
-
-        if node.namespace not in {"global", None}:
-            self._skip_flag = True
-            logger.warning(
-                "Invalid assignment detected at line %d, column %d. "
-                "A variable cannot be assigned to a dict path whose namespace '%s' "
-                "references a target that was not provided as input. "
-                "The assignment will be skipped. Please ensure the target '%s' is provided using the '-c' option.",
-                node.lineno,
-                node.col_offset,
-                node.namespace,
-                node.namespace,
-            )
-
-    def visit_break(self, node: _ast.Break):
-        if not self._in_loop:
-            raise CMateError("'break' outside loop")
-
-        self._break = True
-
-    def visit_continue(self, node: _ast.Continue):
-        if not self._in_loop:
-            raise CMateError("'continue' not properly in loop")
-
-        self._continue = True
+    def _rhs_references_missing_target(self, node: _ast.Node) -> bool:
+        """
+        Return True (and log a warning) if any DictPath in *node* references
+        a namespace that was not provided as an input config.
+        """
+        for n in _iter_nodes(node):
+            if (
+                isinstance(n, _ast.DictPath)
+                and n.namespace not in {None, "global"}
+                and n.namespace not in self._input_configs
+            ):
+                logger.warning(
+                    "Assignment at line %d, column %d references namespace %r "
+                    "which was not provided via -c. Skipped.",
+                    n.lineno, n.col_offset, n.namespace,
+                )
+                return True
+        return False
 
     def process(self, node):
         self.visit(node)
 
 
+class RuleCollector(_StatementExecutor):
+    """
+    Walks partition sections and collects Rule nodes into a ruleset dict.
+    Rules are filtered by minimum severity.
+    Namespace resolution is done via a closure – the AST is never mutated.
+    """
+
+    def __init__(self, input_configs: dict, data_source: DataSource,
+                 severity: str):
+        super().__init__(data_source)
+        self._input_configs = input_configs
+        self._min_severity = Severity[severity.upper()]
+        self._namespace: str | None = None
+        self._ruleset: dict[str, set] = defaultdict(set)
+
+    def _make_evaluator(self) -> _ExpressionEvaluator:
+        resolver = _make_partition_resolver(
+            self._namespace, self._data_source, self._loop_stack
+        )
+        return _ExpressionEvaluator(self._data_source, resolver)
+
+    # -- section gates -------------------------------------------------------
+
+    def visit_meta(self, node):       pass
+    def visit_dependency(self, node): pass
+    def visit_global(self, node):     pass
+
+    def visit_partition(self, node: _ast.Partition):
+        if node.target.id not in self._input_configs:
+            return
+        self._namespace = node.target.id
+        self._exec_body(node.body)
+        self._namespace = None
+
+    # -- rules ---------------------------------------------------------------
+
+    def visit_rule(self, node: _ast.Rule):
+        if self._min_severity > node.severity:
+            return
+        self._ruleset[self._namespace].add(node)
+
+    def collect(self, node) -> dict:
+        self.visit(node)
+        return self._ruleset
+
+
+class InfoCollector(NodeVisitor):
+    """
+    Collects metadata, dependency declarations, and partition requirements
+    without executing any expressions.
+    """
+
+    def __init__(self):
+        self._metadata_map: dict = {}
+        self._dependency_map: dict = {}
+        self._partition_map: dict = {}
+        self._context_map: dict[str, set] = defaultdict(set)
+        self._namespace: str | None = None
+
+    def visit_meta(self, node: _ast.Meta):
+        if self._metadata_map:
+            logger.warning("Multiple [metadata] sections – earlier one overwritten.")
+            self._metadata_map = {}
+        for assign in node.body:
+            self._metadata_map[assign.target.id] = self._literal_value(assign.value)
+
+    def visit_dependency(self, node: _ast.Dependency):
+        if self._dependency_map:
+            logger.warning("Multiple [dependency] sections – earlier one overwritten.")
+            self._dependency_map = {}
+        for desc in node.body:
+            name = desc.target.id
+            if name in self._dependency_map:
+                logger.warning(
+                    "Dependency %r redefined at line %d, column %d.",
+                    name, desc.lineno, desc.col_offset,
+                )
+            self._dependency_map[name] = (desc.desc, desc.parse_type)
+
+    def visit_global(self, node): pass
+
+    def visit_partition(self, node: _ast.Partition):
+        self._namespace = node.target.id
+        required_targets: set[str] = set()
+        required_contexts: set[str] = set()
+
+        if self._namespace in self._partition_map:
+            logger.warning(
+                "Multiple [par %s] sections – earlier one overwritten.", self._namespace
+            )
+
+        for stmt in node.body:
+            self._collect_deps(stmt, required_targets, required_contexts)
+
+        if self._namespace != "env" and self._namespace not in self._dependency_map:
+            logger.warning("Partition %r not found in dependency map.", self._namespace)
+
+        desc, parse_type = self._dependency_map.get(self._namespace, (None, None))
+        self._partition_map[self._namespace] = {
+            "desc": desc,
+            "parse_type": parse_type,
+            "required_targets":  sorted(required_targets) or None,
+            "required_contexts": sorted(required_contexts) or None,
+        }
+        self._namespace = None
+
+    def collect(self, node) -> dict:
+        try:
+            self.visit(node)
+        except Exception as exc:
+            raise CMateError(f"Configuration parsing failed: {exc}") from exc
+
+        contexts = {
+            var: {"desc": self._dependency_map.get(var), "options": sorted(opts)}
+            for var, opts in self._context_map.items()
+        }
+        return {
+            "metadata": self._metadata_map,
+            "targets":  self._partition_map,
+            "contexts": contexts,
+        }
+
+    # -- helpers -------------------------------------------------------------
+
+    def _collect_deps(self, node, targets: set, contexts: set):
+        """Recursively walk *node* collecting namespace references."""
+        if isinstance(node, _ast.DictPath):
+            ns = node.namespace
+            if ns is None or ns in {"global", "env"}:
+                return
+            if ns not in self._dependency_map:
+                logger.warning(
+                    "Undefined namespace %r at line %d, column %d.",
+                    ns, node.lineno, node.col_offset,
+                )
+            if ns == "context":
+                contexts.add(node.path)
+            else:
+                targets.add(ns)
+            return
+
+        if isinstance(node, _ast.Compare):
+            # Detect 'context::var == <literal>' to populate context option sets
+            if (
+                isinstance(node.left, _ast.DictPath)
+                and node.left.namespace == "context"
+                and isinstance(node.comparator, _ast.Constant)
+            ):
+                self._context_map[node.left.path].add(node.comparator.value)
+
+        # Recurse into child nodes
+        if hasattr(node, "__slots__"):
+            for attr in node.__slots__:
+                child = getattr(node, attr, None)
+                if isinstance(child, _ast.Node):
+                    self._collect_deps(child, targets, contexts)
+                elif isinstance(child, list):
+                    for item in child:
+                        if isinstance(item, _ast.Node):
+                            self._collect_deps(item, targets, contexts)
+
+    @staticmethod
+    def _literal_value(node):
+        """Extract a plain Python value from a Constant/List/Dict AST node."""
+        if node is None:
+            return None
+        if isinstance(node, _ast.Constant):
+            return node.value
+        if isinstance(node, _ast.List):
+            return [InfoCollector._literal_value(e) for e in node.elts]
+        if isinstance(node, _ast.Dict):
+            return dict(zip(
+                (InfoCollector._literal_value(k) for k in node.keys),
+                (InfoCollector._literal_value(v) for v in node.values),
+            ))
+        raise CMateError(f"Unsupported literal node: {type(node).__name__}")
+
+
+# ---------------------------------------------------------------------------
+# AST pretty-printer
+# ---------------------------------------------------------------------------
+
 class ASTFormatter(NodeVisitor):
+    """Convert an AST node back to a human-readable string."""
+
     def visit_name(self, node: _ast.Name):
         return node.id
 
     def visit_constant(self, node: _ast.Constant):
-        value = node.value
-        return repr(value) if isinstance(value, str) else value
+        return repr(node.value) if isinstance(node.value, str) else node.value
 
     def visit_dictpath(self, node: _ast.DictPath):
-        namespace = node.namespace
-        if namespace is None:
-            namespace = "global"
-        return f"{namespace}::{node.path}"
+        ns = node.namespace if node.namespace is not None else "global"
+        return f"{ns}::{node.path}"
 
     def visit_list(self, node: _ast.List):
-        return [self.visit(elt) for elt in node.elts]
+        return [self.visit(e) for e in node.elts]
 
     def visit_dict(self, node: _ast.Dict):
-        keys = [self.visit(key) for key in node.keys]
-        values = [self.visit(value) for value in node.values]
-
-        return dict(zip(keys, values))
+        return dict(zip(
+            (self.visit(k) for k in node.keys),
+            (self.visit(v) for v in node.values),
+        ))
 
     def visit_compare(self, node: _ast.Compare):
-        left = self.visit(node.left)
-        comparator = self.visit(node.comparator)
-
-        return f"{left} {node.op} {comparator}"
-
-    def visit_call(self, node: _ast.Call):
-        args = [self.visit(arg) for arg in node.args]
-        str_args = ", ".join(map(str, args))
-        return f"{node.func.id}({str_args})"
-
-    def visit_unaryop(self, node: _ast.UnaryOp):
-        operand = self.visit(node.operand)
-
-        return f"{node.op} {operand}"
+        return f"{self.visit(node.left)} {node.op} {self.visit(node.comparator)}"
 
     def visit_binop(self, node: _ast.BinOp):
-        left = self.visit(node.left)
-        right = self.visit(node.right)
+        return f"{self.visit(node.left)} {node.op} {self.visit(node.right)}"
 
-        return f"{left} {node.op} {right}"
+    def visit_unaryop(self, node: _ast.UnaryOp):
+        return f"{node.op} {self.visit(node.operand)}"
+
+    def visit_call(self, node: _ast.Call):
+        args = ", ".join(str(self.visit(a)) for a in node.args)
+        return f"{node.func.id}({args})"
 
     def visit_rule(self, node: _ast.Rule):
         return self.visit(node.test)
@@ -652,105 +602,144 @@ class ASTFormatter(NodeVisitor):
         return self.visit(node)
 
 
+# ---------------------------------------------------------------------------
+# Environment script generator
+# ---------------------------------------------------------------------------
+
 class EnvironmentScriptGenerator(NodeVisitor):
-    def __init__(self, data_source):
+    """
+    Inspects the [par env] partition and generates a set_env.sh script.
+    Only emits the script when an env partition actually exists.
+    """
+
+    _SAFE_VALUE = re.compile(r"[a-zA-Z0-9_\-:.;]+")
+
+    def __init__(self, data_source: DataSource):
         self._evaluator = _ExpressionEvaluator(data_source)
-        self._white_list = re.compile(r"[a-zA-Z0-9_\-:.;]+")
         self._environ = os.environ.copy()
-        self._set_scripts = []
-        self._undo_scripts = []
+        self._set_cmds: list[str] = []
+        self._undo_cmds: list[str] = []
+        self._has_env_partition = False
 
-    def visit_meta(self, node):
-        pass
-
-    def visit_dependency(self, node):
-        pass
-
-    def visit_global(self, node: _ast.Global):
-        pass
+    def visit_meta(self, node):       pass
+    def visit_dependency(self, node): pass
+    def visit_global(self, node):     pass
 
     def visit_partition(self, node: _ast.Partition):
         if node.target.id != "env":
             return
+        self._has_env_partition = True
+        for stmt in node.body:
+            self.visit(stmt)
 
-        for rule_node in node.body:
-            self.visit(rule_node)
+    def visit_rule(self, node: _ast.Rule):
+        self.visit(node.test)
+
+    def visit_if(self, node: _ast.If):
+        # Only walk tests to extract env assignments; don't branch-execute
+        self.visit(node.test)
+        for stmt in node.body:
+            self.visit(stmt)
+        if node.orelse:
+            for stmt in node.orelse:
+                self.visit(stmt)
+
+    def visit_for(self, node: _ast.For):
+        for stmt in node.body:
+            self.visit(stmt)
 
     def visit_compare(self, node: _ast.Compare):
-        if not isinstance(node.left, _ast.DictPath) or node.left.namespace == "context":
+        if (
+            not isinstance(node.left, _ast.DictPath)
+            or node.left.namespace == "context"
+        ):
             return
 
         env_var = node.left.path
 
         if node.op == "==":
-            expected_val = self._evaluator.evaluate(node.comparator)
+            expected = self._evaluator.evaluate(node.comparator)
         elif node.op == "in":
-            expected_val = self._evaluator.evaluate(node.comparator)[0]
+            expected = self._evaluator.evaluate(node.comparator)[0]
         else:
             return
 
-        if expected_val is NA:
-            self._set_scripts.append(f"unset {env_var}")
+        if expected is NA:
+            self._set_cmds.append(f"unset {env_var}")
             return
 
-        if expected_val is None:
+        if expected is None:
             logger.warning(
-                "At line %d, column %d: 'None' cannot be used to unset environment variables. "
-                "Please use the special value 'NA' to explicitly leave a variable unset.",
-                node.lineno,
-                node.col_offset,
+                "Line %d, col %d: use NA (not None) to unset an env var.",
+                node.lineno, node.col_offset,
             )
-            self._set_scripts.append(f"unset {env_var}")
+            self._set_cmds.append(f"unset {env_var}")
             return
 
-        if not isinstance(expected_val, str):
+        if not isinstance(expected, str):
             logger.warning(
-                "At line %d, column %d: non-str value cannot be used to set environment variables.",
-                node.lineno,
-                node.col_offset,
+                "Line %d, col %d: non-str value cannot set an env var.",
+                node.lineno, node.col_offset,
             )
             return
 
-        if not self._white_list.fullmatch(expected_val):
+        if not self._SAFE_VALUE.fullmatch(expected):
             logger.warning(
-                "At line %d, column %d: Unexpected value '%s' detected. "
-                "This value is not in the allowed format/pattern.",
-                node.lineno,
-                node.col_offset,
-                expected_val,
+                "Line %d, col %d: value %r fails safety check.",
+                node.lineno, node.col_offset, expected,
             )
             return
 
-        original_val = self._environ.get(env_var)
+        original = self._environ.get(env_var)
+        self._set_cmds.append(f'export {env_var}="{expected}"')
+        self._undo_cmds.append(
+            f"unset {env_var}" if original is None
+            else f'export {env_var}="{original}"'
+        )
 
-        self._set_scripts.append(f'export {env_var}="{expected_val}"')
-        if original_val is None:
-            self._undo_scripts.append(f"unset {env_var}")
-        else:
-            self._undo_scripts.append(f'export {env_var}="{original_val}"')
-
-    def generate(self, node):
+    def generate(self, node, output_path: str = "set_env.sh") -> bool:
+        """
+        Walk *node* and write the script to *output_path*.
+        Returns True if a script was written, False if no env partition exists.
+        """
         self.visit(node)
+        if not self._has_env_partition:
+            return False
 
-        script_format = (
+        template = (
             "#!/bin/bash\n"
-            "# Environment variable management script auto-generated by cmate\n"
+            "# Auto-generated by cmate – do not edit manually.\n"
             "# Usage:\n"
-            "#   source set_env.sh    # Apply environment changes\n"
-            "#   source set_env.sh 0  # Revert changes\n\n"
+            "#   source set_env.sh    # apply changes\n"
+            "#   source set_env.sh 0  # revert changes\n\n"
             'if [ "$1" = "0" ]; then\n'
             "    {undo}\n"
             "else\n"
             "    {set}\n"
             "fi\n"
         )
+        set_part  = "\n    ".join(self._set_cmds)  or ":"
+        undo_part = "\n    ".join(self._undo_cmds) or ":"
+        with open(output_path, "w") as f:
+            f.write(template.format(set=set_part, undo=undo_part))
+        return True
 
-        with open_s("set_env.sh", "w") as f:
-            self._set_scripts = self._set_scripts or [":"]
-            self._undo_scripts = self._undo_scripts or [":"]
 
-            script = script_format.format(
-                set="\n    ".join(self._set_scripts),
-                undo="\n    ".join(self._undo_scripts),
-            )
-            f.write(script)
+# ---------------------------------------------------------------------------
+# Utility: iterate all nodes in a subtree
+# ---------------------------------------------------------------------------
+
+def _iter_nodes(node: _ast.Node):
+    """Yield all AST nodes in *node*'s subtree (depth-first)."""
+    if not isinstance(node, _ast.Node):
+        return
+    yield node
+    if hasattr(node, "__slots__"):
+        for attr in node.__slots__:
+            child = getattr(node, attr, None)
+            if isinstance(child, _ast.Node):
+                yield from _iter_nodes(child)
+            elif isinstance(child, list):
+                for item in child:
+                    if isinstance(item, _ast.Node):
+                        yield from _iter_nodes(item)
