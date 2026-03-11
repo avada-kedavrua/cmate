@@ -1,7 +1,7 @@
 [par user_config]
 assert ${deploy_config.p_instance_num} * ${deploy_config.single_p_instance_pod_num} + ${deploy_config.d_instance_num} * ${deploy_config.single_d_instance_pod_num} == ${context::}, '请确保大EP实例总数与智算服务器数量匹配', error
 assert image_exists(${deploy_config.image_name}), '镜像不存在将导致大EP部署失败，请检查镜像名称是否正确', error
-assert path_exists(${deploy_config.mindie_host_log_path}), '日志路径不存在将导致部署失败，请确认路径配置是否正确, error
+assert path_exists(${deploy_config.mindie_host_log_path}), '日志路径不存在将导致部署失败，请确认路径配置是否正确', error
 assert path_exists(${deploy_config.weight_mount_path}), '权重挂载路径不存在将导致大EP部署失败，请确认路径配置是否正确', error
 assert ${deploy_config.job_id} in get_k8s_namespaces(), 'K8s命名空间与配置的Job ID保持不一致导致大EP部署失败，请确认命令空间配置是否正确', error
 alert ${deploy_config.coordinator_backup_cfg.function_enable}, '当前coordinator功能开关状态检查'

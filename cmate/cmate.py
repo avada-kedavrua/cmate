@@ -14,15 +14,16 @@
 # See the Mulan PSL v2 for more details.
 # -------------------------------------------------------------------------
 
-import argparse
+import os
 import ast
 import json
 import logging
-import os
+import argparse
+from pathlib import Path
 from datetime import datetime
 from typing import List, Optional, Tuple, Dict, Any
 
-from . import _ast as ast
+from . import _ast
 from ._test import make_test_suite, RuleTestRunner
 from .data_source import DataSource, NAType
 from .parser import Parser
@@ -48,7 +49,7 @@ LOG_FORMAT = "[%(levelname)s] [%(name)s] %(message)s"
 logger = logging.getLogger(__name__)
 
 
-def _parse_configs(configs: Optional[List[str]]) -> Tuple[bool, Dict[str, Tuple[str, str]]]:
+def _parse_configs(configs: Optional[List[str]]) -> Dict[str, Tuple[str, str]]:
     """
     Parse '-c' arguments of the form '<name>:<path>[@<parse_type>]' or 'env'.
 
@@ -56,12 +57,16 @@ def _parse_configs(configs: Optional[List[str]]) -> Tuple[bool, Dict[str, Tuple[
         configs (Optional[List[str]]): List of configs of the form '<name>:<path>[@<parse_type>]' or 'env'.
 
     Returns:
-        Tuple[bool, Dict[str, Tuple[str, str]]]: Whether parsing was successful and the parsed configs.
+        Dict[str, Tuple[str, str]]: The parsed configs.
+        
+    Raises:
+        ValueError: If a config is not of the form '<name>:<path>[@<parse_type>]' or 'env'.    
     """
-    if not configs:
-        return True, {}
-
     result = {}
+
+    if not configs:
+        return result
+
     for entry in configs:
         if entry == "env":
             result["env"] = (None, None)
@@ -69,11 +74,7 @@ def _parse_configs(configs: Optional[List[str]]) -> Tuple[bool, Dict[str, Tuple[
 
         parts = entry.split(":", 1)
         if len(parts) != 2:
-            logger.error(
-                "Invalid -c format %r. Expected '<name>:<path>' or "
-                "'<name>:<path>@<parse_type>'.", entry
-            )
-            return False, result
+            raise ValueError(f"`configs` parameter expected to be a list of '<name>:<path>[@<parse_type>]' or 'env', got: {configs!r}")
 
         name = parts[0]
         fields = parts[1].split("@", 1)
@@ -81,25 +82,30 @@ def _parse_configs(configs: Optional[List[str]]) -> Tuple[bool, Dict[str, Tuple[
         parse_type = fields[1] if len(fields) == 2 else None
         result[name] = (path, parse_type)
 
-    return True, result
+    return result
 
 
-def _parse_contexts(contexts: Optional[List[str]]) -> Tuple[bool, Dict[str, str]]:
+def _parse_contexts(contexts: Optional[List[str]]) -> Dict[str, str]:
     """
     Parse '-C' arguments of the form '<name>:<value>'.
-    Numeric values are coerced via ast.literal_eval; others stay as strings.
-    """
-    if not contexts:
-        return True, {}
+    
+    Args:
+        contexts (Optional[List[str]]): List of contexts of the form '<name>:<value>'.
 
+    Returns:
+        Dict[str, str]: The parsed contexts.
+        
+    Raises:
+        ValueError: If a context is not of the form '<name>:<value>'.
+    """
     result = {}
+    if not contexts:
+        return result
+
     for entry in contexts:
         parts = entry.split(":", 1)
         if len(parts) != 2:
-            logger.error(
-                "Invalid -C format %r. Expected '<name>:<value>'.", entry
-            )
-            return False, result
+            raise ValueError(f"`contexts` parameter expected to be a list of '<name>:<value>', got: {contexts!r}")
 
         name, raw = parts
         try:
@@ -107,7 +113,7 @@ def _parse_contexts(contexts: Optional[List[str]]) -> Tuple[bool, Dict[str, str]
         except (ValueError, SyntaxError):
             result[name] = raw
 
-    return True, result
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -326,18 +332,25 @@ class _NAEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
-def parse(rule_path: str) -> ast.Document:
+def parse(rule_path: Path) -> _ast.Document:
     """Parse a cmate rule file and return the Document AST node."""
-    parser = Parser()
-    with open(rule_path) as f:
-        return parser.parse(f.read())
+    if not isinstance(rule_path, Path):
+        rule_path = Path(rule_path)
+    
+    rule_path = rule_path.resolve()
+    
+    if not rule_path.is_file():
+        raise OSError(f"Rule file is not a file: {rule_path}")
+
+    return Parser().parse(rule_path.read_text(encoding="utf-8"))
 
 
-def inspect(rule_path: str, output_format: str = "text") -> None:
+def inspect(rule_path: Path, output_format: str = "text") -> None:
     """Print human-readable or JSON information about a rule file."""
     formatters = {"text": _display_text, "json": _display_json}
     if output_format not in formatters:
         raise ValueError(f"Unsupported output format: {output_format!r}")
+
     node = parse(rule_path)
     info = InfoCollector().collect(node)
     return formatters[output_format](info)
@@ -353,17 +366,23 @@ def run(
     output_path: str = "",
     severity: str = "info",
 ) -> int:
+    """Validate configurations against rules defined in a cmate rule file.
+    
+    Args:
+        rule_path (str): Path to the cmate rule file. The rule file should be in the cmate rule language and follow the cmate syntax.
+        configs (List[str]): List of config files to validate. Each config file should be in the format '<name>:<path>[@<type>]' or 'env'.
+        contexts (List[str]): List of context variables to use. Each context variable should be in the format '<name>:<value>'.
+        failfast (bool): Whether to stop validation on the first failure. If set to True, the validation will terminate immediately upon encountering the first failure.
+        verbosity (bool): Whether to print verbose output. If set to True, the output will include more detailed information about the validation process.
+        collect_only (bool): Whether to collect rules without executing them. If set to True, the tool will only collect the rules and display them in a human-readable format.
+        output_path (str): Directory path for the JSON result file. If not specified, the result will be printed to stdout.
+        severity (str): Minimum severity level of rules to execute. Valid values are "info", "warning", and "error". If not specified, all rules will be executed.
+    
+    Returns:
+        int: 0 on success, 1 on failure.
     """
-    Main entry point for rule evaluation.
-    Returns 0 on success, 1 on failure.
-    """
-    ok, configs = _parse_configs(configs)
-    if not ok:
-        return 1
-
-    ok, contexts = _parse_contexts(contexts)
-    if not ok:
-        return 1
+    configs = _parse_configs(configs)
+    contexts = _parse_contexts(contexts)
 
     node = parse(rule_path)
     info = InfoCollector().collect(node)
@@ -392,7 +411,7 @@ def run(
     return _execute(ruleset, data_source, failfast, verbosity, output_path)
 
 
-def _show_collected(ruleset: Dict[str, List[ast.Rule]]) -> int:
+def _show_collected(ruleset: Dict[str, List[_ast.Rule]]) -> int:
     """Display the collected rules in a human-readable format."""
     formatter = ASTFormatter()
     lines = []
@@ -404,7 +423,7 @@ def _show_collected(ruleset: Dict[str, List[ast.Rule]]) -> int:
     return 0
 
 
-def _execute(ruleset: Dict[str, List[ast.Rule]], data_source: DataSource,
+def _execute(ruleset: Dict[str, List[_ast.Rule]], data_source: DataSource,
              failfast: bool, verbosity: bool, output_path: str) -> int:
     """Execute the collected rules and return the result."""
     runner = RuleTestRunner(failfast=failfast, verbosity=verbosity)
@@ -422,47 +441,49 @@ def _execute(ruleset: Dict[str, List[ast.Rule]], data_source: DataSource,
     return 0 if result.wasSuccessful() else 1
 
 
-def main() -> int:
+def main(args: Optional[List[str]] = None) -> int:
     """Main entry point for the cmate command-line tool."""
-    ap = argparse.ArgumentParser(
+    parser = argparse.ArgumentParser(
         prog="cmate",
         description="CMATE – Configuration Management and Testing Engine",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    sub = ap.add_subparsers(dest="command", required=True)
+    global_parser = argparse.ArgumentParser(add_help=False)
+    global_parser.add_argument("-l", "--log-level", choices=LOG_LEVELS, default="info",
+                    help="Logging verbosity")
+    global_parser.add_argument("rule", type=Path, help="Path to the cmate rule file")
+
+    subparser = parser.add_subparsers(dest="command", required=False)
 
     # -- run -----------------------------------------------------------------
-    rp = sub.add_parser("run", help="Validate configurations against rules")
-    rp.add_argument("rule", help="Path to the cmate rule file")
-    rp.add_argument("--configs", "-c", nargs="*",
+    run_parser = subparser.add_parser("run", parents=[global_parser], help="Validate configurations against rules")
+    run_parser.add_argument("--configs", "-c", nargs="*",
                     help="Config files: '<name>:<path>[@<type>]' or 'env'")
-    rp.add_argument("--contexts", "-C", nargs="*",
+    run_parser.add_argument("--contexts", "-C", nargs="*",
                     help="Context variables: '<name>:<value>'")
-    rp.add_argument("-co", "--collect-only", action="store_true",
+    run_parser.add_argument("-co", "--collect-only", action="store_true",
                     help="List rules without executing them")
-    rp.add_argument("--output-path",
+    run_parser.add_argument("--output-path", type=Path,
                     help="Directory for the JSON result file")
-    rp.add_argument("-x", "--fail-fast", action="store_true", dest="failfast",
+    run_parser.add_argument("-x", "--fail-fast", action="store_true", dest="failfast",
                     help="Stop on first failure")
-    rp.add_argument("-v", "--verbose", action="store_true", dest="verbose",
+    run_parser.add_argument("-v", "--verbose", action="store_true", dest="verbose",
                     help="Verbose test output")
-    rp.add_argument("-s", "--severity",
+    run_parser.add_argument("-s", "--severity",
                     choices=["info", "warning", "error"], default="info",
                     help="Minimum severity to execute (default: info)")
-    rp.add_argument("-l", "--log-level", choices=LOG_LEVELS, default="info",
-                    help="Logging verbosity")
 
     # -- inspect -------------------------------------------------------------
-    ip = sub.add_parser("inspect", help="Show rule file requirements")
-    ip.add_argument("rule", help="Path to the cmate rule file")
-    ip.add_argument("--format", "-f", choices=["text", "json"], default="text",
+    inspect_parser = subparser.add_parser("inspect", parents=[global_parser], help="Show rule file requirements")
+    inspect_parser.add_argument("--format", "-f", choices=["text", "json"], default="text",
                     help="Output format (default: text)")
-    ip.add_argument("-l", "--log-level", choices=LOG_LEVELS, default="info",
-                    help="Logging verbosity")
 
-    args = ap.parse_args()
+    args = parser.parse_args(args)
+    if not args.command:
+        parser.print_help()
+        return 1
+
     logging.basicConfig(format=LOG_FORMAT, level=LOG_LEVELS[args.log_level])
-
     if args.command == "inspect":
         try:
             inspect(args.rule, args.format)
@@ -478,6 +499,6 @@ def main() -> int:
         args.failfast,
         args.verbose,
         args.collect_only,
-        args.output_path or "",
+        args.output_path,
         args.severity,
     )
