@@ -3,7 +3,13 @@ import json
 import pytest
 import yaml
 
-from cmate.util import _parse_format_from_path, func_timeout, get_cur_ip, load_from_file, Severity
+from cmate.util import (
+    _parse_format_from_path,
+    func_timeout,
+    get_cur_ip,
+    load_from_file,
+    Severity,
+)
 
 
 class TestSeverity:

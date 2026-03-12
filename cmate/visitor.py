@@ -668,14 +668,14 @@ class InfoCollector(NodeVisitor):
                 targets.add(ns)
             return
 
-        if isinstance(node, _ast.Compare):
-            # Detect 'context::var == <literal>' to populate context option sets
-            if (
-                isinstance(node.left, _ast.DictPath)
-                and node.left.namespace == "context"
-                and isinstance(node.comparator, _ast.Constant)
-            ):
-                self._context_map[node.left.path].add(node.comparator.value)
+        # Detect 'context::var == <literal>' to populate context option sets
+        if (
+            isinstance(node, _ast.Compare)
+            and isinstance(node.left, _ast.DictPath)
+            and node.left.namespace == "context"
+            and isinstance(node.comparator, _ast.Constant)
+        ):
+            self._context_map[node.left.path].add(node.comparator.value)
 
         # Recurse into child nodes
         if hasattr(node, "__slots__"):
