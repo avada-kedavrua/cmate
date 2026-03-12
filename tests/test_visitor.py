@@ -1509,9 +1509,7 @@ data: 'second'
 ---
 """
     node = parser.parse(text)
-    with pytest.raises(
-        CMateError, match="Multiple \\[targets\\] sections not allowed"
-    ):
+    with pytest.raises(CMateError, match="Multiple \\[targets\\] sections not allowed"):
         info_collector.collect(node)
 
 
@@ -1562,9 +1560,7 @@ config: 'Configuration file' @ 'json'
 assert true, 'test'
 """
     node = parser.parse(text)
-    with pytest.raises(
-        CMateError, match="must be declared in \\[targets\\] section"
-    ):
+    with pytest.raises(CMateError, match="must be declared in \\[targets\\] section"):
         info_collector.collect(node)
 
 

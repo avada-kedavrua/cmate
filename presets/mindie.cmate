@@ -300,7 +300,7 @@ if ${context::deploy_mode} == 'pd_mix':
         assert ${BackendConfig.ModelDeployConfig.ModelConfig[0].models.deepseekv2.kv_cache_options} == true, 'enable_nz 表示 kv cache 是否使用 NZ 格式，建议开启', info
 
         if ${context::npu_type} == 'A2':
-            assert ${BackendConfig.npuDeviceIds[0]} == [0, 1, 2, 3, 4, 5, 6, 7], '在 Atlas 800I A2 场景双机拉起 DeepSeek 模型场景下，npuDeviceIds 应该设置为 [[0, 1, 2, 3, 4, 5, 6, 7]]', error
+            assert ${BackendConfig.npuDeviceIds} == [[0, 1, 2, 3, 4, 5, 6, 7]], '在 Atlas 800I A2 场景双机拉起 DeepSeek 模型场景下，npuDeviceIds 应该设置为 [[0, 1, 2, 3, 4, 5, 6, 7]]', error
             assert ${BackendConfig.multiNodesInferEnabled} == true, 'multiNodesInferEnabled 表示服务跨机推理，在 Atlas 800I A2 场景双机拉起 DeepSeek 模型场景下应该是 true', error
             assert ${world_size} == 8, 'worldSize 表示服务跨机推理时的 npu 卡数，在 Atlas 800I A2 场景双机拉起 DeepSeek 模型场景下应该是 8', error
         elif ${context::npu_type} == 'A3':
@@ -626,7 +626,7 @@ if ${context::deploy_mode} == 'ep':
             assert ${deploy_config.p_pod_npu_num} == 8, 'p_pod_npu_num A2 场景应该是 8', error
             assert ${deploy_config.d_pod_npu_num} == 8, 'd_pod_npu_num 应该是 8', error
             assert ${deploy_config.hardware_type} == '800I_A2', 'A2 场景应该是 800I_A2，在版本配套的 config 没有 hardware_type 字段时忽略此检查', warning
-            assert ${mindie_server_prefill_config.BackendConfig.npuDeviceIds[0]} == [0, 1, 2, 3, 4, 5, 6, 7], 'A2 场景 P 节点中 npuDeviceIds 应该设置为 [[0, 1, 2, 3, 4, 5, 6, 7]]', error
+            assert ${mindie_server_prefill_config.BackendConfig.npuDeviceIds} == [[0, 1, 2, 3, 4, 5, 6, 7]], 'A2 场景 P 节点中 npuDeviceIds 应该设置为 [[0, 1, 2, 3, 4, 5, 6, 7]]', error
             assert ${mindie_server_prefill_config.BackendConfig.ModelDeployConfig.ModelConfig[0].worldSize} == 8, 'A2 场景 P 节点中 worldSize 应该是 8', error
             
             if ${max_seq_len} <= 18000:

@@ -722,8 +722,7 @@ class ASTFormatter(NodeVisitor):
         return repr(node.value) if isinstance(node.value, str) else node.value
 
     def visit_dictpath(self, node: _ast.DictPath):
-        ns = node.namespace if node.namespace is not None else "global"
-        return f"{ns}::{node.path}"
+        return node.path if node.namespace is None else f"{node.namespace}::{node.path}"
 
     def visit_list(self, node: _ast.List):
         return [self.visit(e) for e in node.elts]

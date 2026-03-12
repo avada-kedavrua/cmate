@@ -592,8 +592,8 @@ def main(args: Optional[List[str]] = None) -> int:
     if parsed.command == "inspect":
         try:
             inspect(parsed.rule, parsed.format)
-        except (OSError, ValueError, CmateError) as e:
-            logger.error("%s", e)
+        except (OSError, ValueError, CmateError):
+            logger.exception("%s")
             return 1
         except Exception:
             logger.exception("Unexpected error during inspect")
@@ -612,8 +612,8 @@ def main(args: Optional[List[str]] = None) -> int:
             parsed.output_path,
             parsed.severity,
         )
-    except (OSError, ValueError, ParseFormatError, CmateError) as e:
-        logger.error("%s", e)
+    except (OSError, ValueError, ParseFormatError, CmateError):
+        logger.exception("%s")
         return 1
     except Exception:
         logger.exception("Unexpected error during run")
