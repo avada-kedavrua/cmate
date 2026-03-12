@@ -92,11 +92,11 @@ def _parse_format_from_path(path: Path) -> ParseFormat:
 
 
 def load_from_file(path: Path, parse_format: ParseFormat = ParseFormat.UNKNOWN) -> Any:
-    if parse_format == ParseFormat.UNKNOWN:
-        parse_format = _parse_format_from_path(path)
-
     if not isinstance(path, Path):
         path = Path(path)
+
+    if parse_format == ParseFormat.UNKNOWN:
+        parse_format = _parse_format_from_path(path)
 
     path = path.resolve()
     text = path.read_text(encoding="utf-8")

@@ -199,17 +199,19 @@ class TestMakeTestCase:
 
     def test_build_test_case(self):
         """Test creating test case class"""
+        data_source = MagicMock()
         rule = Rule(1, 1, Constant(1, 1, True), "test", Severity.ERROR)
-        cls = _build_test_case("TestClass", {rule}, "test_ns", {})
+        cls = _build_test_case("test_ns", {rule}, data_source, {})
 
-        assert cls.__name__ == "TestClass"
+        assert cls.__name__ == "Test-test_ns"
         assert hasattr(cls, "test_1")
 
     def test_build_test_case_multiple_rules(self):
         """Test creating test case with multiple rules"""
+        data_source = MagicMock()
         rule1 = Rule(10, 1, Constant(10, 1, True), "test1", Severity.ERROR)
         rule2 = Rule(20, 1, Constant(20, 1, True), "test2", Severity.WARNING)
-        cls = _build_test_case("TestClass", {rule1, rule2}, "test_ns", {})
+        cls = _build_test_case("test_ns", {rule1, rule2}, data_source, {})
 
         assert hasattr(cls, "test_10")
         assert hasattr(cls, "test_20")
@@ -223,13 +225,14 @@ class TestMakeTestMethod:
         const = Constant(1, 1, True)
         rule = Rule(1, 1, const, "test message", Severity.ERROR)
 
-        test_method = _build_test_method(rule, "test_ns", {})
+        evaluator = MagicMock()
+        evaluator.evaluate.return_value = True
+        evaluator.history = []
 
-        # Create a mock instance
+        output = {}
+        test_method = _build_test_method(rule, "test_ns", evaluator, output)
+
         inst = MagicMock()
-        inst.evaluator.evaluate.return_value = True
-        inst.evaluator.history = []
-
         # Should not raise
         test_method(inst)
 
@@ -238,12 +241,14 @@ class TestMakeTestMethod:
         const = Constant(1, 1, False)
         rule = Rule(1, 1, const, "test message", Severity.ERROR)
 
-        test_method = _build_test_method(rule, "test_ns", {})
+        evaluator = MagicMock()
+        evaluator.evaluate.return_value = False
+        evaluator.history = []
+
+        output = {}
+        test_method = _build_test_method(rule, "test_ns", evaluator, output)
 
         inst = MagicMock()
-        inst.evaluator.evaluate.return_value = False
-        inst.evaluator.history = []
-
         with pytest.raises(RuleAssertionError):
             test_method(inst)
 
@@ -252,14 +257,13 @@ class TestMakeTestMethod:
         const = Constant(1, 1, True)
         rule = Rule(1, 1, const, "test message", Severity.ERROR)
 
-        test_method = _build_test_method(rule, "test_ns", {})
-
-        inst = MagicMock()
-        inst.evaluator.evaluate.return_value = True
-        inst.evaluator.history = [("key", "value")]
+        evaluator = MagicMock()
+        evaluator.evaluate.return_value = True
+        evaluator.history = [("key", "value")]
 
         output = {}
-        test_method = _build_test_method(rule, "test_ns", output)
+        test_method = _build_test_method(rule, "test_ns", evaluator, output)
+        inst = MagicMock()
         test_method(inst)
 
         assert "test_ns" in output
@@ -284,38 +288,6 @@ class TestRuleTestRunnerExtended:
 
 class TestRuleTestResultExtended:
     """Extended tests for RuleTestResult"""
-
-    def test_add_warning(self):
-        """Test addWarning method"""
-        stream = StringIO()
-        result = RuleTestResult(stream=stream)
-        result.addWarning("Test warning message")
-        assert "Test warning message" in result._log_messages
-
-    def test_print_warnings(self):
-        """Test printWarnings method"""
-        from unittest.runner import _WritelnDecorator
-
-        stream = _WritelnDecorator(StringIO())
-        result = RuleTestResult(stream=stream)
-        result.addWarning("Test warning 1")
-        result.addWarning("Test warning 2")
-        result.printWarnings()
-        output = stream.getvalue()
-        # Now prints "LOG MESSAGES" instead of "WARNINGS"
-        assert "LOG MESSAGES" in output
-        assert "Test warning 1" in output
-        assert "Test warning 2" in output
-
-    def test_print_warnings_empty(self):
-        """Test printWarnings with no warnings"""
-        from unittest.runner import _WritelnDecorator
-
-        stream = _WritelnDecorator(StringIO())
-        result = RuleTestResult(stream=stream)
-        result.printWarnings()
-        output = stream.getvalue()
-        assert output == ""
 
     def test_add_expected_failure(self):
         """Test addExpectedFailure method"""
@@ -467,15 +439,15 @@ class TestRuleTestResultPrintErrors:
         result = RuleTestResult(stream=stream)
         result.printErrors()
         output = stream.getvalue()
-        # Should just write a newline and flush
-        assert output == "\n"
+        # Only flush is called, no writing
+        assert output == ""
 
 
 class TestRuleTestResultUpdateMethods:
-    """Tests for RuleTestResult _update methods"""
+    """Tests for RuleTestResult _tick methods"""
 
     def test_update_verbose_long_test_id(self):
-        """Test _update_verbose with long test id"""
+        """Test _tick_verbose with long test id"""
         from unittest.runner import _WritelnDecorator
 
         stream = _WritelnDecorator(StringIO())
@@ -484,12 +456,12 @@ class TestRuleTestResultUpdateMethods:
         test.id.return_value = "a" * 200  # Very long test id
         test.namespace = "test_ns"
 
-        result._update_verbose(test, "PASSED")
+        result._tick_verbose(test, "PASSED")
         output = stream.getvalue()
         assert "..." in output or "PASSED" in output
 
     def test_update_with_overflow(self):
-        """Test _update when status chars overflow available space"""
+        """Test _tick when status chars overflow available space"""
         from unittest.runner import _WritelnDecorator
 
         stream = _WritelnDecorator(StringIO())
@@ -501,5 +473,5 @@ class TestRuleTestResultUpdateMethods:
         for _ in range(200):
             result._status_chars.append(".")
 
-        result._update(test, ".")
+        result._tick(test, ".")
         # Should handle overflow gracefully - output not needed for assertion

@@ -1,13 +1,14 @@
 import json
 import sys
-from unittest.mock import mock_open, patch
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from cmate import cmate
 from cmate._ast import Constant, DictPath, Rule
 from cmate.data_source import DataSource, NA
-from cmate.util import Severity
+from cmate.util import ParseFormat, Severity
 
 
 class TestParseConfigs:
@@ -15,43 +16,41 @@ class TestParseConfigs:
 
     def test_parse_configs_empty(self):
         """Test parsing empty configs"""
-        ret, result = cmate._parse_configs([])
-        assert ret is True
+        result = cmate._parse_configs([])
         assert result == {}
 
     def test_parse_configs_simple(self):
         """Test parsing simple config"""
-        ret, result = cmate._parse_configs(["config:/path/to/config"])
-        assert ret is True
-        assert result == {"config": ("/path/to/config", None)}
+        result = cmate._parse_configs(["config:/path/to/config"])
+        assert "config" in result
+        path, pf = result["config"]
+        assert path == Path("/path/to/config")
+        assert pf == ParseFormat.UNKNOWN
 
     def test_parse_configs_with_parse_format(self):
-        """Test parsing config with parse type"""
-        ret, result = cmate._parse_configs(["config:/path/to/config@json"])
-        assert ret is True
-        assert result == {"config": ("/path/to/config", "json")}
+        """Test parsing config with parse format"""
+        result = cmate._parse_configs(["config:/path/to/config@.json"])
+        path, pf = result["config"]
+        assert path == Path("/path/to/config")
+        assert pf == ParseFormat.JSON
 
     def test_parse_configs_env(self):
         """Test parsing env config"""
-        ret, result = cmate._parse_configs(["env"])
-        assert ret is True
-        assert result == {"env": (None, None)}
+        result = cmate._parse_configs(["env"])
+        assert "env" in result
+        assert result["env"] == (None, ParseFormat.UNKNOWN)
 
     def test_parse_configs_multiple(self):
         """Test parsing multiple configs"""
-        configs = ["cfg1:/path1", "cfg2:/path2@yaml"]
-        ret, result = cmate._parse_configs(configs)
-        assert ret is True
-        assert result["cfg1"] == ("/path1", None)
-        assert result["cfg2"] == ("/path2", "yaml")
+        configs = ["cfg1:/path1", "cfg2:/path2@.yaml"]
+        result = cmate._parse_configs(configs)
+        assert result["cfg1"] == (Path("/path1"), ParseFormat.UNKNOWN)
+        assert result["cfg2"] == (Path("/path2"), ParseFormat.YAML)
 
-    def test_parse_configs_invalid_format(self, caplog):
+    def test_parse_configs_invalid_format(self):
         """Test parsing invalid config format"""
-        import logging
-
-        cmate.logger.setLevel(logging.ERROR)
-        ret, result = cmate._parse_configs(["invalid_config"])
-        assert ret is False
+        with pytest.raises(ValueError):
+            cmate._parse_configs(["invalid_config"])
 
 
 class TestParseContexts:
@@ -59,77 +58,68 @@ class TestParseContexts:
 
     def test_parse_contexts_empty(self):
         """Test parsing empty contexts"""
-        ret, result = cmate._parse_contexts([])
-        assert ret is True
+        result = cmate._parse_contexts([])
         assert result == {}
 
     def test_parse_contexts_string(self):
         """Test parsing string context"""
-        ret, result = cmate._parse_contexts(["name:value"])
-        assert ret is True
+        result = cmate._parse_contexts(["name:value"])
         assert result == {"name": "value"}
 
     def test_parse_contexts_integer(self):
         """Test parsing integer context"""
-        ret, result = cmate._parse_contexts(["count:42"])
-        assert ret is True
+        result = cmate._parse_contexts(["count:42"])
         assert result == {"count": 42}
 
     def test_parse_contexts_negative_number(self):
         """Test parsing negative integer context"""
-        ret, result = cmate._parse_contexts(["count:-42"])
-        assert ret is True
+        result = cmate._parse_contexts(["count:-42"])
         assert result == {"count": -42}
 
     def test_parse_contexts_string_in_quotes(self):
         """Test parsing quoted string context"""
-        ret, result = cmate._parse_contexts(["name:'42'"])
-        assert ret is True
+        result = cmate._parse_contexts(["name:'42'"])
         assert result == {"name": "42"}
 
     def test_parse_contexts_multiple(self):
         """Test parsing multiple contexts"""
         contexts = ["a:1", "b:'two'", "c:True"]
-        ret, result = cmate._parse_contexts(contexts)
-        assert ret is True
+        result = cmate._parse_contexts(contexts)
         assert result["a"] == 1
         assert result["b"] == "two"
         assert result["c"] is True
 
-    def test_parse_contexts_invalid_format(self, caplog):
+    def test_parse_contexts_invalid_format(self):
         """Test parsing invalid context format"""
-        import logging
-
-        cmate.logger.setLevel(logging.ERROR)
-        ret, result = cmate._parse_contexts(["invalid"])
-        assert ret is False
+        with pytest.raises(ValueError):
+            cmate._parse_contexts(["invalid"])
 
 
 class TestDisplayFunctions:
     """Tests for display functions"""
 
     def test_format_section(self, capsys):
-        """Test _format_section function"""
-        cmate._format_section("Test Section")
+        """Test _print_section function"""
+        cmate._print_section("Test Section")
         captured = capsys.readouterr()
         assert "Test Section" in captured.out
         assert "------------" in captured.out
 
     def test_format_section_with_level(self, capsys):
-        """Test _format_section with indentation level"""
-        cmate._format_section("Test", level=2)
+        """Test _print_section with indentation level"""
+        cmate._print_section("Test", level=2)
         captured = capsys.readouterr()
         assert "    Test" in captured.out
 
     def test_format_field(self, capsys):
-        """Test _format_field function"""
-        cmate._format_field("key", "value", indent=0)
+        """Test _print_field function"""
+        cmate._print_field("key", "value", indent=0)
         captured = capsys.readouterr()
         assert "key : value" in captured.out
 
     def test_format_field_with_indent(self, capsys):
-        """Test _format_field with indentation"""
-        cmate._format_field("key", "value", indent=2)
+        """Test _print_field with indentation"""
+        cmate._print_field("key", "value", indent=2)
         captured = capsys.readouterr()
         assert "    key : value" in captured.out
 
@@ -143,13 +133,12 @@ class TestDisplayFunctions:
 
 
 class TestValidateAndLoadTargets:
-    """Tests for _validate_and_load_targets function"""
+    """Tests for _load_targets function"""
 
     def test_validate_and_load_targets_empty(self):
         """Test with empty input targets"""
         ds = DataSource()
-        ret, matched = cmate._validate_and_load_targets({}, {}, ds)
-        assert ret is True
+        matched = cmate._load_targets({}, {}, ds)
         assert matched == []
 
     def test_validate_and_load_targets_not_in_all(self, caplog):
@@ -158,33 +147,31 @@ class TestValidateAndLoadTargets:
 
         cmate.logger.setLevel(logging.WARNING)
         ds = DataSource()
-        input_targets = {"missing": ("/path", None)}
+        input_targets = {"missing": (Path("/path"), ParseFormat.UNKNOWN)}
         all_targets = {}
-        ret, matched = cmate._validate_and_load_targets(input_targets, all_targets, ds)
-        assert ret is True
+        matched = cmate._load_targets(input_targets, all_targets, ds)
         assert matched == []
 
     def test_validate_and_load_targets_env(self):
         """Test loading env target"""
         ds = DataSource()
-        input_targets = {"env": (None, None)}
+        input_targets = {"env": (None, ParseFormat.UNKNOWN)}
         all_targets = {"env": {}}
-        ret, matched = cmate._validate_and_load_targets(input_targets, all_targets, ds)
-        assert ret is True
+        matched = cmate._load_targets(input_targets, all_targets, ds)
         assert "env" in matched
 
 
 class TestCollectMissingDependencies:
-    """Tests for _collect_missing_dependencies function"""
+    """Tests for _collect_missing function"""
 
     def test_no_missing_deps(self):
         """Test with no missing dependencies"""
         matched = ["target1"]
-        input_targets = {"target1": ("/path", None)}
+        input_targets = {"target1": (Path("/path"), ParseFormat.UNKNOWN)}
         input_contexts = {}
         all_targets = {"target1": {"required_targets": [], "required_contexts": []}}
 
-        result = cmate._collect_missing_dependencies(
+        result = cmate._collect_missing(
             matched, input_targets, input_contexts, all_targets
         )
         assert result == {}
@@ -192,13 +179,13 @@ class TestCollectMissingDependencies:
     def test_missing_target(self):
         """Test with missing target dependency"""
         matched = ["target1"]
-        input_targets = {"target1": ("/path", None)}
+        input_targets = {"target1": (Path("/path"), ParseFormat.UNKNOWN)}
         input_contexts = {}
         all_targets = {
             "target1": {"required_targets": ["target2"], "required_contexts": []}
         }
 
-        result = cmate._collect_missing_dependencies(
+        result = cmate._collect_missing(
             matched, input_targets, input_contexts, all_targets
         )
         assert "target1" in result
@@ -207,13 +194,13 @@ class TestCollectMissingDependencies:
     def test_missing_context(self):
         """Test with missing context dependency"""
         matched = ["target1"]
-        input_targets = {"target1": ("/path", None)}
+        input_targets = {"target1": (Path("/path"), ParseFormat.UNKNOWN)}
         input_contexts = {}
         all_targets = {
             "target1": {"required_targets": [], "required_contexts": ["ctx1"]}
         }
 
-        result = cmate._collect_missing_dependencies(
+        result = cmate._collect_missing(
             matched, input_targets, input_contexts, all_targets
         )
         assert "target1" in result
@@ -221,7 +208,7 @@ class TestCollectMissingDependencies:
 
 
 class TestValidateAndLoadContexts:
-    """Tests for _validate_and_load_contexts function"""
+    """Tests for _load_contexts function"""
 
     def test_validate_and_load_contexts(self):
         """Test loading contexts"""
@@ -229,7 +216,7 @@ class TestValidateAndLoadContexts:
         input_contexts = {"ctx1": "value1", "ctx2": 42}
         all_contexts = {"ctx1": {}, "ctx2": {}}
 
-        cmate._validate_and_load_contexts(input_contexts, all_contexts, ds)
+        cmate._load_contexts(input_contexts, all_contexts, ds)
 
         assert ds["context::ctx1"] == "value1"
         assert ds["context::ctx2"] == 42
@@ -243,19 +230,19 @@ class TestValidateAndLoadContexts:
         input_contexts = {"unknown": "value"}
         all_contexts = {}
 
-        cmate._validate_and_load_contexts(input_contexts, all_contexts, ds)
+        cmate._load_contexts(input_contexts, all_contexts, ds)
         # Should log warning but not raise
 
 
 class TestCollectOnly:
-    """Tests for _collect_only function"""
+    """Tests for _show_collected function"""
 
     def test_collect_only_empty(self, caplog):
         """Test with empty ruleset"""
         import logging
 
         cmate.logger.setLevel(logging.INFO)
-        result = cmate._collect_only({})
+        result = cmate._show_collected({})
         assert result == 0
 
     def test_collect_only_with_rules(self, caplog):
@@ -267,29 +254,29 @@ class TestCollectOnly:
         rule = Rule(1, 1, const, "test", Severity.ERROR)
         ruleset = {"ns": {rule}}
 
-        result = cmate._collect_only(ruleset)
+        result = cmate._show_collected(ruleset)
         assert result == 0
 
 
 class TestNAEncoder:
-    """Tests for NAEncoder class"""
+    """Tests for _NAEncoder class"""
 
     def test_encode_na(self):
         """Test encoding NA value"""
-        encoder = cmate.NAEncoder()
+        encoder = cmate._NAEncoder()
         result = encoder.default(NA)
         assert result == {"NAType": True}
 
     def test_encode_regular(self):
         """Test encoding regular value"""
-        encoder = cmate.NAEncoder()
+        encoder = cmate._NAEncoder()
         result = encoder.encode("string")
         assert result == '"string"'
 
     def test_json_dump_with_na(self):
         """Test JSON dump with NA value"""
         data = {"key": NA, "other": "value"}
-        result = json.dumps(data, cls=cmate.NAEncoder)
+        result = json.dumps(data, cls=cmate._NAEncoder)
         assert "NAType" in result
 
 
@@ -364,59 +351,69 @@ class TestFileExtensionValidation:
 class TestInspect:
     """Tests for inspect function"""
 
-    @patch("cmate.cmate.open_s", mock_open(read_data="[metadata]\nname = 'test'\n---"))
-    def test_inspect_text(self, capsys):
+    def test_inspect_text(self, capsys, tmp_path):
         """Test inspect with text format"""
-        cmate.inspect("/path/to/rule.cmate", "text")
+        rule_file = tmp_path / "rule.cmate"
+        rule_file.write_text("[metadata]\nname = 'test'\n---")
+
+        cmate.inspect(str(rule_file), "text")
         captured = capsys.readouterr()  # noqa: F841
         # Should output something
 
-    @patch("cmate.cmate.open_s", mock_open(read_data="[metadata]\nname = 'test'\n---"))
-    def test_inspect_json(self, capsys):
+    def test_inspect_json(self, capsys, tmp_path):
         """Test inspect with json format"""
-        cmate.inspect("/path/to/rule.cmate", "json")
+        rule_file = tmp_path / "rule.cmate"
+        rule_file.write_text("[metadata]\nname = 'test'\n---")
+
+        cmate.inspect(str(rule_file), "json")
         captured = capsys.readouterr()
         assert "metadata" in captured.out
 
-    @patch("cmate.cmate.open_s", mock_open(read_data="[metadata]\nname = 'test'\n---"))
-    def test_inspect_invalid_format(self):
+    def test_inspect_invalid_format(self, tmp_path):
         """Test inspect with invalid format"""
+        rule_file = tmp_path / "rule.cmate"
+        rule_file.write_text("[metadata]\nname = 'test'\n---")
+
         with pytest.raises(ValueError, match="Unsupported output format"):
-            cmate.inspect("/path/to/rule.cmate", "invalid")
+            cmate.inspect(str(rule_file), "invalid")
 
 
 class TestRun:
     """Tests for run function"""
 
-    @patch(
-        "cmate.cmate.open_s", mock_open(read_data="[par test]\nassert true, 'test'\n")
-    )
-    @patch("cmate.cmate._validate_and_load_dependencies")
-    def test_run(self, mock_validate):
+    def test_run(self, tmp_path):
         """Test run function"""
-        mock_validate.return_value = (True, DataSource())
-        result = cmate.run("/path/to/rule.cmate", configs={"test": ("/path", "json")})
-        # Function should complete without error
+        rule_file = tmp_path / "rule.cmate"
+        rule_file.write_text(
+            "[dependency]\ntest: 'Test config'\n---\n[par test]\nassert true, 'test'\n"
+        )
+        config_file = tmp_path / "config.json"
+        config_file.write_text('{"key": 1}')
+
+        result = cmate.run(str(rule_file), configs=[f"test:{config_file}"])
         assert isinstance(result, int)
 
-    @patch(
-        "cmate.cmate.open_s", mock_open(read_data="[par test]\nassert true, 'test'\n")
-    )
-    def test_run_validation_fails(self):
+    def test_run_validation_fails(self, tmp_path):
         """Test run when validation fails"""
-        result = cmate.run("/path/to/rule.cmate", configs={})
-        assert result == 1
+        rule_file = tmp_path / "rule.cmate"
+        rule_file.write_text(
+            "[dependency]\ntest: 'Test config'\n---\n[par test]\nassert true, 'test'\n"
+        )
+        with pytest.raises(cmate.ValidationError):
+            cmate.run(str(rule_file), configs=[])
 
-    @patch(
-        "cmate.cmate.open_s", mock_open(read_data="[par test]\nassert true, 'test'\n")
-    )
-    @patch("cmate.cmate._validate_and_load_dependencies")
-    def test_run_collect_only(self, mock_validate, capsys):
+    def test_run_collect_only(self, tmp_path, capsys):
         """Test run with collect_only flag"""
-        mock_validate.return_value = (True, DataSource())
+        rule_file = tmp_path / "rule.cmate"
+        rule_file.write_text(
+            "[dependency]\ntest: 'Test config'\n---\n[par test]\nassert true, 'test'\n"
+        )
+        config_file = tmp_path / "config.json"
+        config_file.write_text('{"key": 1}')
+
         result = cmate.run(
-            "/path/to/rule.cmate",
-            configs={"test": ("/path", "json")},
+            str(rule_file),
+            configs=[f"test:{config_file}"],
             collect_only=True,
         )
         assert result == 0
@@ -437,44 +434,52 @@ class TestDisplayText:
     """Tests for display text functions"""
 
     def test_display_text_overview(self, capsys):
-        """Test _display_text_overview with data"""
-        metadata = {"name": "test", "version": "1.0"}
-        cmate._display_text_overview(metadata)
+        """Test _display_text with overview data"""
+        info = {
+            "metadata": {"name": "test", "version": "1.0"},
+            "targets": {},
+            "contexts": {},
+        }
+        cmate._display_text(info)
         captured = capsys.readouterr()
         assert "Overview" in captured.out
         assert "name" in captured.out
 
     def test_display_text_overview_empty(self, capsys):
-        """Test _display_text_overview with empty data"""
-        cmate._display_text_overview({})
+        """Test _display_text with empty overview"""
+        info = {"metadata": {}, "targets": {}, "contexts": {}}
+        cmate._display_text(info)
         captured = capsys.readouterr()
         assert "No overview available" in captured.out
 
     def test_display_text_contexts(self, capsys):
-        """Test _display_text_contexts"""
+        """Test _display_text with contexts"""
         contexts = {
             "mode": {"desc": ("Deployment mode", None), "options": ["dev", "prod"]}
         }
-        cmate._display_text_contexts(contexts)
+        info = {"metadata": {}, "targets": {}, "contexts": contexts}
+        cmate._display_text(info)
         captured = capsys.readouterr()
         assert "Context Variables" in captured.out
         assert "mode" in captured.out
 
     def test_display_text_contexts_empty(self, capsys):
-        """Test _display_text_contexts with empty data"""
-        cmate._display_text_contexts({})
+        """Test _display_text with empty contexts"""
+        info = {"metadata": {}, "targets": {}, "contexts": {}}
+        cmate._display_text(info)
         captured = capsys.readouterr()
         assert "No contexts available" in captured.out
 
     def test_display_text_contexts_tuple_desc(self, capsys):
-        """Test _display_text_contexts with tuple description"""
+        """Test _display_text with tuple description"""
         contexts = {"mode": {"desc": ("Description text",), "options": ["a", "b"]}}
-        cmate._display_text_contexts(contexts)
+        info = {"metadata": {}, "targets": {}, "contexts": contexts}
+        cmate._display_text(info)
         captured = capsys.readouterr()
         assert "Description text" in captured.out
 
     def test_display_text_targets(self, capsys):
-        """Test _display_text_targets"""
+        """Test _display_text with targets"""
         targets = {
             "config": {
                 "desc": "Configuration file",
@@ -483,13 +488,14 @@ class TestDisplayText:
                 "required_contexts": ["env"],
             }
         }
-        cmate._display_text_targets(targets)
+        info = {"metadata": {}, "targets": targets, "contexts": {}}
+        cmate._display_text(info)
         captured = capsys.readouterr()
         assert "Config Targets" in captured.out
         assert "config" in captured.out
 
     def test_display_text_targets_env(self, capsys):
-        """Test _display_text_targets with env target"""
+        """Test _display_text with env target"""
         targets = {
             "env": {
                 "desc": None,
@@ -498,125 +504,118 @@ class TestDisplayText:
                 "required_contexts": None,
             }
         }
-        cmate._display_text_targets(targets)
+        info = {"metadata": {}, "targets": targets, "contexts": {}}
+        cmate._display_text(info)
         captured = capsys.readouterr()
-        assert "Environment variables validation" in captured.out
+        assert "Environment variable validation" in captured.out
 
     def test_display_text_targets_empty(self, capsys):
-        """Test _display_text_targets with empty data"""
-        cmate._display_text_targets({})
+        """Test _display_text with empty targets"""
+        info = {"metadata": {}, "targets": {}, "contexts": {}}
+        cmate._display_text(info)
         captured = capsys.readouterr()
         assert "No config targets available" in captured.out
 
-    def test_display_text_missing_attr(self, caplog):
+    def test_display_text_missing_attr(self):
         """Test _display_text with missing attributes"""
-        import logging
-
-        cmate.logger.setLevel(logging.CRITICAL)
         info = {"metadata": {}}  # Missing targets and contexts
-        cmate._display_text(info)
-        # Should log critical error
+        with pytest.raises(KeyError):
+            cmate._display_text(info)
 
 
 class TestValidateAndLoadDependencies:
-    """Tests for _validate_and_load_dependencies"""
+    """Tests for _load_dependencies"""
 
-    def test_validate_no_matched_targets(self, caplog):
+    def test_validate_no_matched_targets(self):
         """Test when no targets match"""
-        import logging
-
-        cmate.logger.setLevel(logging.ERROR)
         info = {
             "targets": {"target1": {}},
             "contexts": {},
             "metadata": {},
         }
-        ret, ds = cmate._validate_and_load_dependencies(info, {}, {})
-        assert ret is False
+        with pytest.raises(cmate.ValidationError):
+            cmate._load_dependencies(info, {}, {})
 
-    def test_validate_with_missing_deps(self, caplog):
+    def test_validate_with_missing_deps(self, tmp_path):
         """Test with missing dependencies"""
-        import logging
+        config_file = tmp_path / "config.json"
+        config_file.write_text('{"key": 1}')
 
-        cmate.logger.setLevel(logging.ERROR)
         info = {
             "targets": {
-                "target1": {"required_targets": ["missing"], "required_contexts": []}
+                "target1": {
+                    "required_targets": ["missing"],
+                    "required_contexts": [],
+                    "parse_format": None,
+                }
             },
             "contexts": {},
             "metadata": {},
         }
-        ret, ds = cmate._validate_and_load_dependencies(
-            info, {"target1": ("/path", None)}, {}
-        )
-        assert ret is False
+        with pytest.raises(cmate.ValidationError):
+            cmate._load_dependencies(
+                info, {"target1": (config_file, ParseFormat.JSON)}, {}
+            )
 
 
 class TestLogMissingError:
-    """Tests for _log_missing_error"""
+    """Tests for _format_missing"""
 
-    def test_log_missing_error(self, caplog):
-        """Test _log_missing_error function"""
-        import logging
-
-        cmate.logger.setLevel(logging.ERROR)
+    def test_log_missing_error(self):
+        """Test _format_missing function"""
         missing_deps = {"target1": {"targets": ["dep1"], "contexts": ["ctx1"]}}
         all_targets = {"dep1": {"desc": "Dependency 1"}}
         all_contexts = {"ctx1": {"desc": ("Context 1", None), "options": ["a"]}}
 
-        cmate._log_missing_error(missing_deps, all_targets, all_contexts)
-        # Should log error message
+        result = cmate._format_missing(missing_deps, all_targets, all_contexts)
+        assert isinstance(result, str)
+        assert "dep1" in result
 
 
 class TestValidateAndLoadTargetsExtended:
-    """Extended tests for _validate_and_load_targets"""
+    """Extended tests for _load_targets"""
 
-    def test_load_target_file_not_found(self, caplog):
+    def test_load_target_file_not_found(self):
         """Test loading target with file not found"""
-        import logging
-
-        cmate.logger.setLevel(logging.ERROR)
         ds = DataSource()
-        input_targets = {"config": ("/nonexistent/path.json", None)}
-        all_targets = {"config": {"parse_format": "json"}}
-
-        ret, matched = cmate._validate_and_load_targets(input_targets, all_targets, ds)
-        assert ret is False
-
-    def test_load_target_unsupported_type(self, caplog):
-        """Test loading target with unsupported parse type"""
-        import logging
-
-        cmate.logger.setLevel(logging.ERROR)
-        ds = DataSource()
-        input_targets = {"config": ("/path", "unsupported")}
+        input_targets = {
+            "config": (Path("/nonexistent/path.json"), ParseFormat.UNKNOWN)
+        }
         all_targets = {"config": {"parse_format": None}}
 
-        ret, matched = cmate._validate_and_load_targets(input_targets, all_targets, ds)
-        assert ret is False
+        with pytest.raises(cmate.ConfigError):
+            cmate._load_targets(input_targets, all_targets, ds)
 
-    def test_load_target_parse_error(self, caplog, tmp_path):
+    def test_load_target_unsupported_type(self, tmp_path):
+        """Test loading target with unsupported parse type"""
+        txt_file = tmp_path / "config.txt"
+        txt_file.write_text("content")
+
+        ds = DataSource()
+        input_targets = {"config": (txt_file, ParseFormat.UNKNOWN)}
+        all_targets = {"config": {"parse_format": None}}
+
+        with pytest.raises(cmate.ConfigError):
+            cmate._load_targets(input_targets, all_targets, ds)
+
+    def test_load_target_parse_error(self, tmp_path):
         """Test loading target with parse error"""
-        import logging
-
-        cmate.logger.setLevel(logging.ERROR)
         bad_json = tmp_path / "bad.json"
         bad_json.write_text("not valid json")
 
         ds = DataSource()
-        input_targets = {"config": (str(bad_json), None)}
-        all_targets = {"config": {"parse_format": "json"}}
+        input_targets = {"config": (bad_json, ParseFormat.UNKNOWN)}
+        all_targets = {"config": {"parse_format": None}}
 
-        ret, matched = cmate._validate_and_load_targets(input_targets, all_targets, ds)
-        assert ret is False
+        with pytest.raises(Exception):  # noqa: B017
+            cmate._load_targets(input_targets, all_targets, ds)
 
 
 class TestRunExtended:
     """Extended tests for run function"""
 
-    def test_run_with_keyerror(self, tmp_path):
-        """Test run when KeyError is raised during rule collection"""
-        # Create a rule file that will cause KeyError
+    def test_run_with_undefined_namespace(self, tmp_path):
+        """Test run with reference to undefined namespace raises ValidationError"""
         rule_file = tmp_path / "test.cmate"
         rule_file.write_text(
             "[dependency]\ntest: 'Test config'\n---\n"
@@ -626,8 +625,8 @@ class TestRunExtended:
         config_file = tmp_path / "config.json"
         config_file.write_text('{"key": 1}')
 
-        result = cmate.run(str(rule_file), configs={"test": (str(config_file), "json")})
-        assert result == 1
+        with pytest.raises(cmate.ValidationError):
+            cmate.run(str(rule_file), configs=[f"test:{config_file}"])
 
     def test_run_with_output_path(self, tmp_path):
         """Test run with output path"""
@@ -644,30 +643,30 @@ class TestRunExtended:
 
         result = cmate.run(
             str(rule_file),
-            configs={"test": (str(config_file), "json")},
-            output_path=str(output_dir),
+            configs=[f"test:{config_file}"],
+            output_path=output_dir,
         )
         # Should complete without error
         assert isinstance(result, int)
 
 
 class TestActualRun:
-    """Tests for _actual_run function"""
+    """Tests for _execute function"""
 
     def test_actual_run_success(self):
-        """Test _actual_run with successful tests"""
+        """Test _execute with successful tests"""
         ds = DataSource()
         const = Constant(1, 1, True)
         rule = Rule(1, 1, const, "test message", Severity.ERROR)
         ruleset = {"test": {rule}}
 
-        result = cmate._actual_run(
+        result = cmate._execute(
             ruleset, ds, failfast=False, verbosity=False, output_path=None
         )
-        assert result is True
+        assert result == 0
 
     def test_actual_run_failure(self):
-        """Test _actual_run with failing tests"""
+        """Test _execute with failing tests"""
         from cmate._ast import Compare
 
         ds = DataSource()
@@ -678,10 +677,10 @@ class TestActualRun:
         rule = Rule(1, 1, compare, "test message", Severity.ERROR)
         ruleset = {"test": {rule}}
 
-        result = cmate._actual_run(
+        result = cmate._execute(
             ruleset, ds, failfast=False, verbosity=False, output_path=None
         )
-        assert result is False
+        assert result == 1
 
 
 class TestRunExtendedMore:
@@ -689,7 +688,7 @@ class TestRunExtendedMore:
 
     @patch("cmate.cmate.parse")
     @patch("cmate.cmate.InfoCollector")
-    @patch("cmate.cmate._validate_and_load_dependencies")
+    @patch("cmate.cmate._load_dependencies")
     @patch("cmate.cmate.AssignmentProcessor")
     @patch("cmate.cmate.RuleCollector")
     def test_run_keyerror_in_collect(
@@ -705,53 +704,50 @@ class TestRunExtendedMore:
             "targets": {},
             "contexts": {},
         }
-        mock_validate.return_value = (True, {})
+        mock_validate.return_value = DataSource()
 
         mock_collector = mock_rule_collector.return_value
         mock_collector.collect.side_effect = KeyError("test_key")
 
-        result = cmate.run("/path/to/rule.cmate")
-        assert result == 1
+        with pytest.raises(cmate.RuleCollectionError):
+            cmate.run("/path/to/rule.cmate")
 
 
 class TestValidateAndLoadTargetsMore:
-    """Extended tests for _validate_and_load_targets"""
+    """Extended tests for _load_targets"""
 
-    @patch("cmate.cmate.load")
-    @patch("cmate.cmate.logger")
-    def test_validate_and_load_targets_oserror(self, mock_logger, mock_load):
-        """Test _validate_and_load_targets with OSError"""
+    @patch("cmate.cmate.load_from_file")
+    def test_validate_and_load_targets_oserror(self, mock_load):
+        """Test _load_targets with OSError"""
         mock_load.side_effect = OSError("File not found")
 
-        input_targets = {"config": ("/path/to/config.json", None)}
-        all_targets = {"config": {"parse_format": "json"}}
+        input_targets = {"config": (Path("/path/to/config.json"), ParseFormat.UNKNOWN)}
+        all_targets = {"config": {"parse_format": None}}
         ds = DataSource()
 
-        ret, matched = cmate._validate_and_load_targets(input_targets, all_targets, ds)
-        assert ret is False
+        with pytest.raises(cmate.ConfigError):
+            cmate._load_targets(input_targets, all_targets, ds)
 
-    @patch("cmate.cmate.load")
-    @patch("cmate.cmate.logger")
-    def test_validate_and_load_targets_typeerror(self, mock_logger, mock_load):
-        """Test _validate_and_load_targets with TypeError"""
+    @patch("cmate.cmate.load_from_file")
+    def test_validate_and_load_targets_typeerror(self, mock_load):
+        """Test _load_targets with TypeError"""
         mock_load.side_effect = TypeError("Invalid type")
 
-        input_targets = {"config": ("/path/to/config.json", None)}
-        all_targets = {"config": {"parse_format": "json"}}
+        input_targets = {"config": (Path("/path/to/config.json"), ParseFormat.UNKNOWN)}
+        all_targets = {"config": {"parse_format": None}}
         ds = DataSource()
 
-        ret, matched = cmate._validate_and_load_targets(input_targets, all_targets, ds)
-        assert ret is False
+        with pytest.raises(TypeError):
+            cmate._load_targets(input_targets, all_targets, ds)
 
-    @patch("cmate.cmate.load")
-    @patch("cmate.cmate.logger")
-    def test_validate_and_load_targets_generic_exception(self, mock_logger, mock_load):
-        """Test _validate_and_load_targets with generic Exception"""
+    @patch("cmate.cmate.load_from_file")
+    def test_validate_and_load_targets_generic_exception(self, mock_load):
+        """Test _load_targets with generic Exception"""
         mock_load.side_effect = Exception("Generic error")
 
-        input_targets = {"config": ("/path/to/config.json", None)}
-        all_targets = {"config": {"parse_format": "json"}}
+        input_targets = {"config": (Path("/path/to/config.json"), ParseFormat.UNKNOWN)}
+        all_targets = {"config": {"parse_format": None}}
         ds = DataSource()
 
-        ret, matched = cmate._validate_and_load_targets(input_targets, all_targets, ds)
-        assert ret is False
+        with pytest.raises(Exception):  # noqa: B017
+            cmate._load_targets(input_targets, all_targets, ds)

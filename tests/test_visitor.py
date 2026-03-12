@@ -503,8 +503,8 @@ done
     document_node = parser.parse(text)
     processor = AssignmentProcessor(input_configs, data_source)
     processor.process(document_node)
-    assert data_source["global::b"] == (1, "global::test_arr[0]")
-    assert data_source["global::c"] == (3, "global::test_arr[2]")
+    assert data_source["global::b"] == (1, "test_arr[0]")
+    assert data_source["global::c"] == (3, "test_arr[2]")
     assert "global::__root__" not in data_source
     assert "global::item" not in data_source
 

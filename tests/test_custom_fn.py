@@ -38,10 +38,10 @@ class TestPathExists:
         assert path_exists("") is False
 
     def test_path_exists_with_exception(self, tmp_path, monkeypatch):
-        """Test path_exists when os.path.exists raises exception"""
+        """Test path_exists when os.path.exists raises TypeError"""
 
         def mock_exists(path):
-            raise PermissionError("Access denied")
+            raise TypeError("Type error")
 
         monkeypatch.setattr(os.path, "exists", mock_exists)
         assert path_exists(str(tmp_path)) is False

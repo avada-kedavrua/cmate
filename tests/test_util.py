@@ -1,4 +1,6 @@
+import ipaddress
 import json
+from pathlib import Path
 
 import pytest
 import yaml
@@ -8,6 +10,8 @@ from cmate.util import (
     func_timeout,
     get_cur_ip,
     load_from_file,
+    ParseFormat,
+    ParseFormatError,
     Severity,
 )
 
@@ -30,10 +34,13 @@ class TestSeverity:
         assert Severity.WARNING > Severity.INFO
 
     def test_severity_comparison_with_strings(self):
-        """Test severity comparison with string values"""
-        assert Severity.INFO < "WARNING"
-        assert Severity.WARNING < "ERROR"
-        assert Severity.ERROR > "INFO"
+        """Test severity comparison with non-Severity types raises TypeError"""
+        with pytest.raises(TypeError):
+            _ = Severity.INFO < "WARNING"
+        with pytest.raises(TypeError):
+            _ = Severity.WARNING < "ERROR"
+        with pytest.raises(TypeError):
+            _ = Severity.ERROR > "INFO"
 
     def test_severity_equality(self):
         """Test severity equality"""
@@ -58,28 +65,28 @@ class TestExtToType:
 
     def test_parse_format_from_path_json(self):
         """Test extracting json extension"""
-        assert _parse_format_from_path("config.json") == "json"
+        assert _parse_format_from_path(Path("config.json")) == ParseFormat.JSON
 
     def test_parse_format_from_path_yaml(self):
         """Test extracting yaml extension"""
-        assert _parse_format_from_path("config.yaml") == "yaml"
+        assert _parse_format_from_path(Path("config.yaml")) == ParseFormat.YAML
 
     def test_parse_format_from_path_yml(self):
         """Test extracting yml extension"""
-        assert _parse_format_from_path("config.yml") == "yml"
+        assert _parse_format_from_path(Path("config.yml")) == ParseFormat.YML
 
     def test_parse_format_from_path_no_ext(self):
         """Test file without extension"""
-        assert _parse_format_from_path("config") == ""
+        assert _parse_format_from_path(Path("config")) == ParseFormat.UNKNOWN
 
     def test_parse_format_from_path_uppercase(self):
-        """Test uppercase extension conversion"""
-        assert _parse_format_from_path("config.JSON") == "json"
-        assert _parse_format_from_path("config.YAML") == "yaml"
+        """Test uppercase extension returns UNKNOWN (case-sensitive matching)"""
+        assert _parse_format_from_path(Path("config.JSON")) == ParseFormat.UNKNOWN
+        assert _parse_format_from_path(Path("config.YAML")) == ParseFormat.UNKNOWN
 
     def test_parse_format_from_path_multiple_dots(self):
         """Test file with multiple dots"""
-        assert _parse_format_from_path("config.test.json") == "json"
+        assert _parse_format_from_path(Path("config.test.json")) == ParseFormat.JSON
 
 
 class TestLoad:
@@ -113,12 +120,12 @@ class TestLoad:
         assert result == test_data
 
     def test_load_with_explicit_parse_format(self, tmp_path):
-        """Test loading with explicit parse type"""
+        """Test loading with explicit parse format"""
         json_file = tmp_path / "config.txt"
         test_data = {"key": "value"}
         json_file.write_text(json.dumps(test_data))
 
-        result = load_from_file(str(json_file), parse_format="json")
+        result = load_from_file(str(json_file), parse_format=ParseFormat.JSON)
         assert result == test_data
 
     def test_load_empty_yaml(self, tmp_path):
@@ -143,13 +150,11 @@ class TestLoad:
         txt_file = tmp_path / "test.txt"
         txt_file.write_text("content")
 
-        with pytest.raises(TypeError, match="Unsupported parse type"):
+        with pytest.raises(ParseFormatError, match="Unsupported parse format"):
             load_from_file(str(txt_file))
 
     def test_load_nonexistent_file(self):
         """Test loading non-existent file"""
-        # open_s from msguard validates path and raises InvalidParameterError
-        # which is a subclass of Exception
         with pytest.raises(Exception):  # noqa: B017
             load_from_file("/nonexistent/path/file.json")
 
@@ -158,9 +163,9 @@ class TestGetCurIp:
     """Tests for get_cur_ip function"""
 
     def test_get_cur_ip_returns_string(self):
-        """Test that get_cur_ip returns a string"""
+        """Test that get_cur_ip returns an IPv4Address or None"""
         result = get_cur_ip()
-        assert isinstance(result, str)
+        assert result is None or isinstance(result, ipaddress.IPv4Address)
 
     def test_get_cur_ip_no_exception(self):
         """Test that get_cur_ip doesn't raise exception"""

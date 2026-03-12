@@ -188,21 +188,21 @@ class TestDataSource:
         assert ds["global::key"]["nested"] == "modified"
 
     def test_datasource_split(self):
-        """Test _split method"""
+        """Test _resolve method"""
         ds = DataSource()
-        ns, path = ds._split("namespace::path.to.key")
+        ns, path = ds._resolve("namespace::path.to.key")
         assert ns == "namespace"
         assert path == "path.to.key"
 
     def test_datasource_split_invalid(self):
-        """Test _split with invalid keys"""
+        """Test _resolve with invalid keys"""
         ds = DataSource()
 
         with pytest.raises(ValueError, match="Invalid key"):
-            ds._split("no_separator")
+            ds._resolve("no_separator")
 
         with pytest.raises(ValueError, match="Invalid key"):
-            ds._split("too::many::separators")
+            ds._resolve("too::many::separators")
 
     def test_datasource_flatten_simple_dict(self):
         """Test flattening simple dictionary"""
