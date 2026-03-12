@@ -517,7 +517,7 @@ def main(args: Optional[List[str]] = None) -> int:
         "-l",
         "--log-level",
         choices=LOG_LEVELS,
-        default="info",
+        default="error",
         help="Logging verbosity",
     )
     global_parser.add_argument("rule", type=Path, help="Path to the cmate rule file")
@@ -613,7 +613,7 @@ def main(args: Optional[List[str]] = None) -> int:
             parsed.severity,
         )
     except (OSError, ValueError, ParseFormatError, CmateError):
-        logger.exception("%s")
+        logger.exception("Error during run")
         return 1
     except Exception:
         logger.exception("Unexpected error during run")
