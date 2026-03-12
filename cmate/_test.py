@@ -72,7 +72,7 @@ class RuleAssertionError(AssertionError):
             lines.append(f"  {Style.DIM}Got:{Style.RESET_ALL}")
             for k, v in self.history:
                 if isinstance(v, tuple):
-                    lines.append(f"    {k} = {v[0]!r} (from {v[1]})")
+                    lines.append(f"    {k} = {v[0]!r} ({Style.DIM}from{Style.RESET_ALL} {v[1]})")
                 else:
                     lines.append(f"    {k} = {v!r}")
             lines.append("")
