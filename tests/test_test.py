@@ -7,7 +7,7 @@ import pytest
 from cmate._ast import Compare, Constant, DictPath, Rule
 from cmate._test import (
     _build_test_case,
-    _build_test_method,
+    _build_rule_method,
     make_test_suite,
     RuleAssertionError,
     RuleTestResult,
@@ -218,9 +218,9 @@ class TestMakeTestCase:
 
 
 class TestMakeTestMethod:
-    """Tests for _build_test_method function"""
+    """Tests for _build_rule_method function"""
 
-    def test_build_test_method_pass(self):
+    def test_build_rule_method_pass(self):
         """Test creating test method that passes"""
         const = Constant(1, 1, True)
         rule = Rule(1, 1, const, "test message", Severity.ERROR)
@@ -230,13 +230,13 @@ class TestMakeTestMethod:
         evaluator.history = []
 
         output = {}
-        test_method = _build_test_method(rule, "test_ns", evaluator, output)
+        test_method = _build_rule_method(rule, "test_ns", evaluator, output)
 
         inst = MagicMock()
         # Should not raise
         test_method(inst)
 
-    def test_build_test_method_fail(self):
+    def test_build_rule_method_fail(self):
         """Test creating test method that fails"""
         const = Constant(1, 1, False)
         rule = Rule(1, 1, const, "test message", Severity.ERROR)
@@ -246,13 +246,13 @@ class TestMakeTestMethod:
         evaluator.history = []
 
         output = {}
-        test_method = _build_test_method(rule, "test_ns", evaluator, output)
+        test_method = _build_rule_method(rule, "test_ns", evaluator, output)
 
         inst = MagicMock()
         with pytest.raises(RuleAssertionError):
             test_method(inst)
 
-    def test_build_test_method_output_populated(self):
+    def test_build_rule_method_output_populated(self):
         """Test that test method populates output dictionary"""
         const = Constant(1, 1, True)
         rule = Rule(1, 1, const, "test message", Severity.ERROR)
@@ -262,7 +262,7 @@ class TestMakeTestMethod:
         evaluator.history = [("key", "value")]
 
         output = {}
-        test_method = _build_test_method(rule, "test_ns", evaluator, output)
+        test_method = _build_rule_method(rule, "test_ns", evaluator, output)
         inst = MagicMock()
         test_method(inst)
 

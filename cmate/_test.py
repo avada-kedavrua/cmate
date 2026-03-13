@@ -19,7 +19,8 @@ import shutil
 import sys
 import time
 import unittest
-from typing import Set
+from dataclasses import dataclass
+from typing import Set, Tuple, List, Any, Union
 
 from colorama import Fore, Style
 
@@ -49,44 +50,92 @@ def _center_with_ansi(text: str, width: int, fillchar: str = " ") -> str:
 
 
 class RuleAssertionError(AssertionError):
-    """Carries the failed Rule node and the evaluator's variable history."""
+    """
+    A Rule whose condition evaluated to False.
 
-    def __init__(self, rule_node: _ast.Rule, history: list):
-        super().__init__()
-        self.rule_node = rule_node
+    Attributes:
+        severity:   Severity level from the rule.
+        msg:        Message declared in the rule.
+        test_expr:  The rule's condition pre-formatted as a string.
+                    Computed once at build time, not re-walked per run.
+        history:    Ordered snapshot of (name, value) pairs the evaluator
+                    recorded while walking the expression tree.
+    """
+
+    def __init__(self, *args: object, severity: Severity, msg: str, test_expr: str, history: Tuple[Tuple[str, Any], ...]) -> None:
+        if not history:
+            raise ValueError("History must not be empty")
+
+        super().__init__(*args)        
+        self.severity = severity
+        self.msg = msg
+        self.test_expr = test_expr
         self.history = history
-
+    
     def build_err_msg(self) -> str:
-        formatter = ASTFormatter()
-        sev_color = self.rule_node.severity.color_code
-        sev_name = self.rule_node.severity.name
-
+        sev_color = self.severity.color_code
         lines = [
             "",
             f"  {Style.DIM}Expected:{Style.RESET_ALL} "
-            f"{Fore.CYAN}{formatter.visit(self.rule_node.test)}{Fore.RESET}",
+            f"{Fore.CYAN}{self.test_expr}{Fore.RESET}",
             "",
         ]
 
-        if self.history:
-            lines.append(f"  {Style.DIM}Got:{Style.RESET_ALL}")
-            for k, v in self.history:
-                if isinstance(v, tuple):
-                    lines.append(
-                        f"    {k} = {Fore.YELLOW}{v[0]!r}{Fore.RESET} "
-                        f"({Style.DIM}from{Style.RESET_ALL} {v[1]})"
-                    )
-                else:
-                    lines.append(f"    {k} = {Fore.YELLOW}{v!r}{Fore.RESET}")
-            lines.append("")
-
-        lines.append(f"  {sev_color}[{sev_name}]{Fore.RESET} {self.rule_node.msg}")
+        lines.append(f"  {Style.DIM}Got:{Style.RESET_ALL}")
+        for k, v in self.history:
+            if isinstance(v, tuple):
+                lines.append(
+                    f"    {k} = {Fore.YELLOW}{v[0]!r}{Fore.RESET} "
+                    f"({Style.DIM}from{Style.RESET_ALL} {v[1]})"
+                )
+            else:
+                lines.append(f"    {k} = {Fore.YELLOW}{v!r}{Fore.RESET}")
+        lines.append("")
+        lines.append(f"  {sev_color}[{self.severity.name}]{Fore.RESET} {self.msg}")
         return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Custom test result / runner
-# ---------------------------------------------------------------------------
+class AlertError(AssertionError):
+    """
+    An Alert that unconditionally marks a field for attention.
+
+    Attributes:
+        severity:    Severity level (default WARNING in the parser).
+        msg:         Message declared in the alert.
+        field_expr:  The alert's target field pre-formatted as a string.
+        field_value: The field's runtime value; None on evaluation error.
+    """
+    def __init__(self, *args: object, severity: Severity, msg: str, field_expr: str, history: Tuple[Tuple[str, Any], ...]) -> None:
+        if not history:
+            raise ValueError("History must not be empty")
+
+        super().__init__(*args)
+        self.severity = severity
+        self.msg = msg
+        self.field_expr = field_expr
+        self.history = history
+    
+    def build_err_msg(self) -> str:
+        sev_color = self.severity.color_code
+        lines = [
+            "",
+            f"  {Style.DIM}Alert:{Style.RESET_ALL} "
+            f"{Fore.CYAN}{self.field_expr}{Fore.RESET}",
+            "",
+        ]
+
+        lines.append(f"  {Style.DIM}Got:{Style.RESET_ALL}")
+        for k, v in self.history:
+            if isinstance(v, tuple):
+                lines.append(
+                    f"    {k} = {Fore.YELLOW}{v[0]!r}{Fore.RESET} "
+                    f"({Style.DIM}from{Style.RESET_ALL} {v[1]})"
+                )
+            else:
+                lines.append(f"    {k} = {Fore.YELLOW}{v!r}{Fore.RESET}")
+        lines.append("")
+        lines.append(f"  {sev_color}[{self.severity.name}]{Fore.RESET} {self.msg}")
+        return "\n".join(lines)
 
 
 class RuleTestResult(unittest.TestResult):
@@ -99,6 +148,8 @@ class RuleTestResult(unittest.TestResult):
         "ERROR": Fore.RED,
         "s": Fore.YELLOW,
         "SKIPPED": Fore.YELLOW,
+        "A": Fore.YELLOW,
+        "ALERT": Fore.YELLOW,
     }
 
     def __init__(
@@ -117,21 +168,12 @@ class RuleTestResult(unittest.TestResult):
         self.total_cnt = total_cnt
         self.failfast = failfast
         self._cols = shutil.get_terminal_size()[0]
-        self._status_chars = []
-        self._colorcode_map = {
-            ".": Fore.GREEN,
-            "PASSED": Fore.GREEN,
-            "F": Fore.RED,
-            "E": Fore.RED,
-            "FAILED": Fore.RED,
-            "ERROR": Fore.RED,
-            "s": Fore.YELLOW,
-            "SKIPPED": Fore.YELLOW,
-            "W": Fore.YELLOW,
-            "WARNING": Fore.YELLOW,
-        }
-        self._status_chars: list[str] = []
+        self._status_chars: List[str] = []
         self._current_namespace = None
+
+        # Alert notices are tracked separately from failures.
+        # They are informational and do not affect the pass/fail count.
+        self.alerts: List[Tuple[unittest.TestCase, AlertError]] = []
 
     def startTestRun(self):
         self.stream.writeln()
@@ -144,9 +186,18 @@ class RuleTestResult(unittest.TestResult):
         return super().addError(test, err)
 
     def addFailure(self, test, err):
+        exc = err[1]
+
+        if isinstance(exc, AlertError):
+            # Alerts are not failures: track separately, do not call super().
+            self.alerts.append((test, exc))
+            self._tick(test, "ALERT" if self.verbosity else "A")
+            return
+
         super().addFailure(test, err)
-        # Replace (test, traceback_str) with (test, RuleAssertionError instance)
-        self.failures[-1] = (test, err[1])
+        # Replace raw (type, value, tb) with the ValidationError so
+        # printErrors can call issue.build_err_msg() without a traceback dump.
+        self.failures[-1] = (test, exc)
         self._tick(test, "FAILED" if self.verbosity else "F")
 
     def addSuccess(self, test):
@@ -170,7 +221,6 @@ class RuleTestResult(unittest.TestResult):
             header = f"{Fore.RED}{' ERRORS '.center(self._cols, '=')}{Fore.RESET}"
             self.stream.writeln(header)
             for test, exc in self.errors:
-                # Build header with consistent coloring
                 test_header = (
                     f" [{test.namespace}] test_{test._testMethodName.split('_')[-1]} "
                 )
@@ -187,11 +237,10 @@ class RuleTestResult(unittest.TestResult):
         if self.failures:
             header = f"{Fore.RED}{' FAILURES '.center(self._cols, '=')}{Fore.RESET}"
             self.stream.writeln(header)
-            for test, err in sorted(
-                self.failures, key=lambda x: x[1].rule_node.severity, reverse=True
+            for test, exc in sorted(
+                self.failures, key=lambda x: x[1].severity, reverse=True
             ):
-                sev_color = err.rule_node.severity.color_code
-                # Extract test number from test method name
+                sev_color = exc.severity.color_code
                 test_num = test._testMethodName.split("_")[-1]
                 test_header = f" [{test.namespace}] test_{test_num} "
                 divider = (
@@ -200,7 +249,22 @@ class RuleTestResult(unittest.TestResult):
                     + f"{Fore.RESET}"
                 )
                 self.stream.writeln(divider)
-                self.stream.writeln(err.build_err_msg())
+                self.stream.writeln(exc.build_err_msg())
+
+        if self.alerts:
+            header = f"{Fore.YELLOW}{' ALERTS '.center(self._cols, '=')}{Fore.RESET}"
+            self.stream.writeln(header)
+            for test, exc in self.alerts:
+                sev_color = exc.severity.color_code
+                test_num = test._testMethodName.split("_")[-1]
+                test_header = f" [{test.namespace}] test_{test_num} "
+                divider = (
+                    f"{sev_color}"
+                    + _center_with_ansi(test_header, self._cols, "_")
+                    + f"{Fore.RESET}"
+                )
+                self.stream.writeln(divider)
+                self.stream.writeln(exc.build_err_msg())
 
         self.stream.flush()
 
@@ -211,13 +275,12 @@ class RuleTestResult(unittest.TestResult):
             self._tick_compact(test, label)
 
     def _tick_compact(self, test, ch: str):
-        # Detect namespace change and preserve previous partition line
         if (
             self._current_namespace is not None
             and self._current_namespace != test.namespace
         ):
-            self.stream.writeln()  # Preserve previous line
-            self._status_chars = []  # Reset for new partition
+            self.stream.writeln()
+            self._status_chars = []
         self._current_namespace = test.namespace
 
         PERCENT_PAD = 1
@@ -318,6 +381,7 @@ class RuleTestRunner:
 
         res.printErrors()
 
+        alert_count = len(res.alerts)
         _COUNTERS = [
             ("errors", "errors"),
             ("failures", "failed"),
@@ -331,11 +395,13 @@ class RuleTestRunner:
             if getattr(res, attr)
         ]
         failed_total = sum(len(c) for c, _ in counts)
-        passed = res.testsRun - failed_total
+        passed = res.testsRun - failed_total - alert_count
         parts = [f"{len(c)} {lbl}" for c, lbl in counts]
+        if alert_count:
+            parts.append(f"{alert_count} alerts")
         parts.append(f"{passed} passed" if passed else "no passed")
         summary = f" {', '.join(parts)} in {elapsed:.3f}s "
-        color = Fore.GREEN if passed == res.testsRun else Fore.RED
+        color = Fore.GREEN if passed == res.testsRun - alert_count else Fore.RED
         self.stream.writeln(f"{color}{summary.center(cols, '=')}{Fore.RESET}")
         self.stream.flush()
         return res
@@ -350,8 +416,9 @@ def make_test_suite(data_source, ruleset: dict, output: dict):
     """
     Build a unittest.TestSuite from *ruleset*.
 
-    Each namespace becomes a TestCase class; each Rule becomes a test method.
-    *output* is populated in-place with structured results for JSON export.
+    Each namespace becomes a TestCase class; each Rule/Alert becomes a test
+    method.  *output* is populated in-place with structured results for JSON
+    export.
     """
     suite = unittest.TestSuite()
     loader = unittest.TestLoader()
@@ -367,19 +434,19 @@ def _build_test_case(
     namespace: str, rule_nodes: Set[_ast.Rule], data_source, output: dict
 ):
     """Dynamically create a TestCase class for one partition namespace."""
-
     resolver = _make_partition_resolver(namespace, data_source, [])
     evaluator = _ExpressionEvaluator(data_source, resolver)
+    formatter = ASTFormatter()
 
     methods = {}
     for node in rule_nodes:
         if isinstance(node, _ast.Alert):
             methods[f"test_{node.lineno}"] = _build_alert_method(
-                node, namespace, evaluator, output
+                node, namespace, evaluator, formatter, output
             )
         else:
-            methods[f"test_{node.lineno}"] = _build_test_method(
-                node, namespace, evaluator, output
+            methods[f"test_{node.lineno}"] = _build_rule_method(
+                node, namespace, evaluator, formatter, output
             )
 
     cls = type(f"Test-{namespace}", (unittest.TestCase,), methods)
@@ -388,73 +455,71 @@ def _build_test_case(
     return cls
 
 
-def _build_test_method(
-    rule: _ast.Rule, namespace: str, evaluator: _ExpressionEvaluator, output: dict
+def _build_rule_method(
+    rule: _ast.Rule,
+    namespace: str,
+    evaluator: _ExpressionEvaluator,
+    formatter: ASTFormatter,
+    output: dict,
 ):
-    _SEV = {Severity.INFO: "info", Severity.WARNING: "warning", Severity.ERROR: "error"}
-    _RES = {True: "passed", False: "failed"}
-    formatter = ASTFormatter()
+    # Pre-format the expression once at build time, not on every test run.
+    test_expr = formatter.visit(rule.test)
 
     def test(inst):
-        test_expr = formatter.visit(rule.test)
         result = evaluator.evaluate(rule.test)
-        history = evaluator.history
+        history = tuple(evaluator.history)
 
         output.setdefault(namespace, []).append(
             {
                 "test": test_expr,
                 "msg": rule.msg,
-                "severity": _SEV[rule.severity],
-                "status": _RES[result],
+                "severity": rule.severity.name.lower(),
+                "status": "passed" if result else "failed",
                 "metadata": dict(history),
             }
         )
 
         if not result:
-            raise RuleAssertionError(rule, history)
+            raise RuleAssertionError(
+                severity=rule.severity,
+                msg=rule.msg,
+                test_expr=test_expr,
+                history=history,
+            )
 
     return test
 
 
 def _build_alert_method(
-    alert: _ast.Alert, namespace: str, evaluator: _ExpressionEvaluator, output: dict
+    alert: _ast.Alert,
+    namespace: str,
+    evaluator: _ExpressionEvaluator,
+    formatter: ASTFormatter,
+    output: dict,
 ):
-    """Build a test method for an Alert node.
-
-    Alert nodes don't evaluate a condition. They mark a field for attention
-    with a message. The test always passes but logs a message.
-    """
-    _SEV = {Severity.INFO: "info", Severity.WARNING: "warning", Severity.ERROR: "error"}
-    formatter = ASTFormatter()
+    # Pre-format the field expression once at build time.
+    field_expr = formatter.visit(alert.field)
 
     def test(inst):
-        # Evaluate the field to get its current value
-        field_expr = formatter.visit(alert.field)
-        try:
-            field_value = evaluator.evaluate(alert.field)
-            history = evaluator.history
-        except Exception:
-            field_value = "<evaluation error>"
-            history = []
+        field_value = evaluator.evaluate(alert.field)
+        history = tuple(evaluator.history)
 
         output.setdefault(namespace, []).append(
             {
                 "field": field_expr,
                 "value": field_value,
                 "msg": alert.msg,
-                "severity": _SEV[alert.severity],
+                "severity": alert.severity.name.lower(),
                 "status": "alert",
                 "metadata": dict(history),
             }
         )
 
-        # Get the test result to log the alert message
-        result = inst._outcome.result if hasattr(inst, "_outcome") else None
-        if result and hasattr(result, "addLogMessage"):
-            color = alert.severity.color_code
-            result.addLogMessage(
-                f"{color}[{alert.severity.name}]{Fore.RESET} "
-                f"{field_expr} = {field_value!r}: {alert.msg}"
-            )
+        raise AlertError(
+            severity=alert.severity,
+            msg=alert.msg,
+            field_expr=field_expr,
+            history=history,
+        )
 
     return test

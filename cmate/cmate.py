@@ -469,10 +469,10 @@ def _show_collected(ruleset: Dict[str, List[_ast.Rule]]) -> int:
     formatter = ASTFormatter()
     lines = []
     for ns, rules in ruleset.items():
-        lines.append(f"<Namespace {ns}>")
+        lines.append(f"<Target {ns}>")
         for rule in rules:
-            lines.append(f"  <Rule-{rule.lineno} {formatter.format(rule)}>")
-    logger.info("\n".join(lines))
+            lines.append(f"  <test_{rule.lineno} {formatter.format(rule)}>")
+    print("\n".join(lines))
     return 0
 
 

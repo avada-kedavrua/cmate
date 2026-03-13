@@ -635,7 +635,7 @@ if ${context::deploy_mode} == 'ep':
                 assert ${p_moe_ep} == 16 and ${p_moe_tp} == 1, 'maxSeqLen 大于 18000 时，P 实例专家并行策略建议设置为：moe_ep = 16, moe_tp = 1, 其中没配置的并行策略默认值为 1', info
             fi
             
-            assert ${deploy_config.prefill_distribute_enable} == NA, '该参数需要以实际 MindIE 版本配套的 user_config.json 中该参数默认值为准', warning
+            alert ${deploy_config.prefill_distribute_enable}, '该参数需要以实际 MindIE 版本配套的 user_config.json 中该参数默认值为准'
             assert ${mindie_server_decode_config.BackendConfig.ModelDeployConfig.ModelConfig[0].models.deepseekv2.parallel_options.hccl_moe_ep_buffer} == 1152, 'hccl_moe_ep_buffer 推荐设置为 1152，需要依据 D 节点 maxBatchSize 值动态调整', info
             
         elif ${context::arch} == 'x86':
@@ -654,7 +654,7 @@ if ${context::deploy_mode} == 'ep':
         assert ${deploy_config.single_d_instance_pod_num} >= 2, 'single_d_instance_pod_num A3 场景应该大于等于 2', error
         assert ${deploy_config.p_pod_npu_num} == 16, 'p_pod_npu_num A3 场景应该是 16', error
         assert ${deploy_config.d_pod_npu_num} == 16, 'd_pod_npu_num A3 场景应该是 16', error
-        assert ${deploy_config.prefill_distribute_enable} == NA, '该参数需要以实际 MindIE 版本配套的 user_config_a3.json 中该参数默认值为准', warning
+        alert ${deploy_config.prefill_distribute_enable}, '该参数需要以实际 MindIE 版本配套的 user_config_a3.json 中该参数默认值为准'
         assert ${deploy_config.hardware_type} == '800I_A3', 'A3 场景应该是 800I_A3，在版本配套的 config 没有 hardware_type 字段时忽略此检查', warning
         assert ${deploy_config.mindie_env_path} == './conf/mindie_env_a3.json', 'A3 场景默认应该是 ./conf/mindie_env_a3.json，在版本配套的 config 没有 mindie_env_path 字段时忽略此检查', info
         assert ${mindie_server_prefill_config.BackendConfig.npuDeviceIds[0]} == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], 'A3 场景 P 节点中 npuDeviceIds 应该设置为 [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]]', error
