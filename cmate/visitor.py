@@ -34,6 +34,21 @@ def _iter_nodes(node: _ast.Node):
                         yield from _iter_nodes(item)
 
 
+class ErrorResult:
+    """Sentinel class for evaluation errors."""
+
+    def __init__(self, lineno: int, col_offset: int, err_msg: str):
+        self.lineno = lineno
+        self.col_offset = col_offset
+        self.err_msg = err_msg
+
+    def __repr__(self):
+        return f"<ErrorResult: {self.err_msg} at line {self.lineno}, column {self.col_offset}>"
+
+    def __bool__(self):
+        return False
+
+
 class NodeVisitor:
     """
     Dispatch visit(node) to visit_<classname>(node).
@@ -155,68 +170,93 @@ class _ExpressionEvaluator(NodeVisitor):
         return val[0] if isinstance(val, tuple) else val
 
     def visit_list(self, node: _ast.List):
-        return [self.visit(elt) for elt in node.elts]
+        result = []
+        for elt in node.elts:
+            val = self.visit(elt)
+            if isinstance(val, ErrorResult):
+                return val
+            result.append(val)
+        return result
 
     def visit_tuple(self, node: _ast.Tuple):
-        return tuple(self.visit(elt) for elt in node.elts)
+        result = []
+        for elt in node.elts:
+            val = self.visit(elt)
+            if isinstance(val, ErrorResult):
+                return val
+            result.append(val)
+        return tuple(result)
 
     def visit_dict(self, node: _ast.Dict):
-        return dict(
-            zip(
-                (self.visit(k) for k in node.keys),
-                (self.visit(v) for v in node.values),
-            )
-        )
+        keys = []
+        for k in node.keys:
+            val = self.visit(k)
+            if isinstance(val, ErrorResult):
+                return val
+            keys.append(val)
+        values = []
+        for v in node.values:
+            val = self.visit(v)
+            if isinstance(val, ErrorResult):
+                return val
+            values.append(val)
+        return dict(zip(keys, values))
 
     def visit_compare(self, node: _ast.Compare):
-        try:
-            # For single comparison with regex match, return the match object
-            if len(node.ops) == 1 and node.ops[0] == "=~":
-                op = self._BINARY_OPS["=~"]
-                return op(self.visit(node.left), self.visit(node.comparators[0]))
-
-            # For chained comparisons, evaluate left to right
+        # For single comparison with regex match, return the match object
+        if len(node.ops) == 1 and node.ops[0] == "=~":
             left = self.visit(node.left)
-            for op_str, comparator_node in zip(node.ops, node.comparators):
-                right = self.visit(comparator_node)
-                op = self._BINARY_OPS[op_str]
+            if isinstance(left, ErrorResult):
+                return left
+            right = self.visit(node.comparators[0])
+            if isinstance(right, ErrorResult):
+                return right
+            op = self._BINARY_OPS["=~"]
+            try:
+                return op(left, right)
+            except TimeoutError as exc:
+                return ErrorResult(node.lineno, node.col_offset, str(exc))
+
+        left = self.visit(node.left)
+        if isinstance(left, ErrorResult):
+            return left
+        for op_str, comparator_node in zip(node.ops, node.comparators):
+            right = self.visit(comparator_node)
+            if isinstance(right, ErrorResult):
+                return right
+            op = self._BINARY_OPS[op_str]
+            try:
                 if not op(left, right):
                     return False
-                left = right
-            return True
-        except CMateError:
-            raise
-        except Exception as exc:
-            raise CMateError(
-                f"Error evaluating comparison at line {node.lineno}, "
-                f"column {node.col_offset}: {exc}"
-            ) from None
+            except Exception as exc:
+                return ErrorResult(node.lineno, node.col_offset, str(exc))
+            left = right
+        return True
 
     def visit_binop(self, node: _ast.BinOp):
+        left = self.visit(node.left)
+        if isinstance(left, ErrorResult):
+            return left
+        right = self.visit(node.right)
+        if isinstance(right, ErrorResult):
+            return right
+        op = self._BINARY_OPS[node.op]
         try:
-            op = self._BINARY_OPS[node.op]
-            return op(self.visit(node.left), self.visit(node.right))
-        except CMateError:
-            raise
+            return op(left, right)
         except Exception as exc:
-            raise CMateError(
-                f"Error evaluating expression at line {node.lineno}, "
-                f"column {node.col_offset}: {exc}"
-            ) from None
+            return ErrorResult(node.lineno, node.col_offset, str(exc))
 
     def visit_unaryop(self, node: _ast.UnaryOp):
+        op = self._UNARY_OPS.get(node.op)
+        if op is None:
+            raise CMateError(f"Unknown unary operator: {node.op!r}")
+        operand = self.visit(node.operand)
+        if isinstance(operand, ErrorResult):
+            return operand
         try:
-            op = self._UNARY_OPS.get(node.op)
-            if op is None:
-                raise CMateError(f"Unknown unary operator: {node.op!r}")
-            return op(self.visit(node.operand))
-        except CMateError:
-            raise
+            return op(operand)
         except Exception as exc:
-            raise CMateError(
-                f"Error evaluating unary operation at line {node.lineno}, "
-                f"column {node.col_offset}: {exc}"
-            ) from None
+            return ErrorResult(node.lineno, node.col_offset, str(exc))
 
     def visit_call(self, node: _ast.Call):
         func = self._func_map.get(node.func.id)
@@ -226,15 +266,16 @@ class _ExpressionEvaluator(NodeVisitor):
                 f"column {node.col_offset}. "
                 "Add it to `custom_fn.py` to use it."
             )
+        args = []
+        for a in node.args:
+            val = self.visit(a)
+            if isinstance(val, ErrorResult):
+                return val
+            args.append(val)
         try:
-            return func(*(self.visit(a) for a in node.args))
-        except CMateError:
-            raise
+            return func(*args)
         except Exception as exc:
-            raise CMateError(
-                f"Error calling function {node.func.id!r} at line {node.lineno}, "
-                f"column {node.col_offset}: {exc}"
-            ) from None
+            return ErrorResult(node.lineno, node.col_offset, str(exc))
 
     # -- public entry point --------------------------------------------------
 
@@ -315,18 +356,21 @@ class _StatementExecutor(NodeVisitor):
                     except TypeError:
                         item_type = type(item).__name__
                         raise CMateError(
-                            f"cannot unpack non-iterable {item_type} object"
+                            f"cannot unpack non-iterable {item_type} object",
+                            f"at line {node.lineno}, column {node.col_offset}",
                         )
 
                     actual_count = len(item_list)
                     if actual_count < expected_count:
                         raise CMateError(
                             f"not enough values to unpack "
-                            f"(expected {expected_count}, got {actual_count})"
+                            f"at line {node.lineno}, column {node.col_offset}",
+                            f"(expected {expected_count}, got {actual_count})",
                         )
                     if actual_count > expected_count:
                         raise CMateError(
-                            f"too many values to unpack (expected {expected_count})"
+                            f"at line {node.lineno}, column {node.col_offset}",
+                            f"too many values to unpack (expected {expected_count})",
                         )
 
                     # Create a dict for all loop variables
@@ -688,18 +732,18 @@ class InfoCollector(NodeVisitor):
             raise CMateError(f"Configuration parsing failed: {exc}") from exc
 
         # Validate that all context:: references are defined in [contexts] section
-        for var in self._context_map.keys():
-            if var not in self._context_def_map:
-                raise CMateError(
-                    f"Context variable {var!r} is used in rules but not declared "
-                    "in [contexts] section."
-                )
+        # Only validate if [contexts] section is present
+        if self._context_def_map:
+            for var in self._context_map.keys():
+                if var not in self._context_def_map:
+                    raise CMateError(
+                        f"Context variable {var!r} is used in rules but not declared "
+                        "in [contexts] section."
+                    )
 
         contexts = {}
         for var, opts in self._context_map.items():
-            desc = None
-            if self._context_def_map:
-                desc = self._context_def_map.get(var)
+            desc = self._context_def_map.get(var) if self._context_def_map else None
             contexts[var] = {"desc": desc, "options": sorted(opts)}
 
         return {

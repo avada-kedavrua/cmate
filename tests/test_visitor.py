@@ -9,6 +9,7 @@ from cmate.visitor import (
     AssignmentProcessor,
     ASTFormatter,
     CMateError,
+    ErrorResult,
     InfoCollector,
     RuleCollector,
 )
@@ -344,8 +345,9 @@ a = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!' =~ '^(a+)+
     document_node = parser.parse(text)
     global_node = document_node.body[0]
     assign_node = global_node.body[0]
-    with pytest.raises(CMateError, match="timed out after"):
-        evaluator.evaluate(assign_node.value)
+    result = evaluator.evaluate(assign_node.value)
+    assert isinstance(result, ErrorResult)
+    assert "timed out after" in result.err_msg
 
 
 def test_eval_contains_check_with_data_source_access_in_global_block_then_result_matches_standard(
@@ -1941,10 +1943,10 @@ assert 'production' == ${context::mode}, ''
 # ---------------------------------------------------------------------------
 
 
-def test_eval_binop_given_incompatible_types_when_evaluated_then_raises_cmate_error_with_location(
+def test_eval_binop_given_incompatible_types_when_evaluated_then_returns_error_result_with_location(
     parser,
 ):
-    """Binary operation with incompatible types should raise CMateError with line/column."""
+    """Binary operation with incompatible types should return ErrorResult with line/column."""
     text = """\
 [global]
 a = 'string' * None
@@ -1955,14 +1957,16 @@ a = 'string' * None
     evaluator = _ExpressionEvaluator(data_source)
     assign_node = document_node.body[0].body[0]
 
-    with pytest.raises(CMateError, match=r"line \d+.*column \d+"):
-        evaluator.evaluate(assign_node.value)
+    result = evaluator.evaluate(assign_node.value)
+    assert isinstance(result, ErrorResult)
+    assert result.lineno > 0
+    assert "can't multiply sequence by non-int" in result.err_msg
 
 
-def test_eval_compare_given_incompatible_types_when_evaluated_then_raises_cmate_error_with_location(
+def test_eval_compare_given_incompatible_types_when_evaluated_then_returns_error_result_with_location(
     parser,
 ):
-    """Comparison with incompatible types should raise CMateError with line/column."""
+    """Comparison with incompatible types should return ErrorResult with line/column."""
     text = """\
 [global]
 a = 'string' < None
@@ -1973,14 +1977,16 @@ a = 'string' < None
     evaluator = _ExpressionEvaluator(data_source)
     assign_node = document_node.body[0].body[0]
 
-    with pytest.raises(CMateError, match=r"line \d+.*column \d+"):
-        evaluator.evaluate(assign_node.value)
+    result = evaluator.evaluate(assign_node.value)
+    assert isinstance(result, ErrorResult)
+    assert result.lineno > 0
+    assert "'<' not supported" in result.err_msg
 
 
-def test_eval_call_given_function_error_when_evaluated_then_raises_cmate_error_with_location(
+def test_eval_call_given_function_error_when_evaluated_then_returns_error_result_with_location(
     parser,
 ):
-    """Function call error should raise CMateError with line/column."""
+    """Function call error should return ErrorResult with line/column."""
     text = """\
 [global]
 a = int('not_a_number')
@@ -1991,8 +1997,10 @@ a = int('not_a_number')
     evaluator = _ExpressionEvaluator(data_source)
     assign_node = document_node.body[0].body[0]
 
-    with pytest.raises(CMateError, match=r"line \d+.*column \d+"):
-        evaluator.evaluate(assign_node.value)
+    result = evaluator.evaluate(assign_node.value)
+    assert isinstance(result, ErrorResult)
+    assert result.lineno > 0
+    assert "invalid literal" in result.err_msg
 
 
 def test_eval_unaryop_given_incompatible_type_when_evaluated_then_raises_cmate_error_with_location(

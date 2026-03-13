@@ -19,17 +19,49 @@ import shutil
 import sys
 import time
 import unittest
-from typing import Any, List, Set, Tuple
+from typing import Any, List, Optional, Set, Tuple
 
 from colorama import Fore, Style
 
 from . import _ast
 from .util import Severity
-from .visitor import _ExpressionEvaluator, _make_partition_resolver, ASTFormatter
+from .visitor import (
+    _ExpressionEvaluator,
+    _make_partition_resolver,
+    ASTFormatter,
+    ErrorResult,
+)
 
 
 # ANSI escape code pattern for calculating visible text length
 _ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _format_history_lines(history: Tuple[Tuple[str, Any], ...]) -> List[str]:
+    """Format history entries into display lines."""
+    lines = [f"  {Style.DIM}Got:{Style.RESET_ALL}"]
+    for k, v in history:
+        if isinstance(v, tuple):
+            lines.append(
+                f"    {k} = {Fore.YELLOW}{v[0]!r}{Fore.RESET} "
+                f"({Style.DIM}from{Style.RESET_ALL} {v[1]})"
+            )
+        else:
+            lines.append(f"    {k} = {Fore.YELLOW}{v!r}{Fore.RESET}")
+    lines.append("")
+    return lines
+
+
+def _format_error_result(error_result: ErrorResult) -> List[str]:
+    """Format ErrorResult into display lines."""
+    return [
+        (
+            f"  {Style.DIM}Error:{Style.RESET_ALL} "
+            f"{error_result.err_msg} at line {error_result.lineno}, "
+            f"column {error_result.col_offset}"
+        ),
+        "",
+    ]
 
 
 def _visible_len(text: str) -> int:
@@ -59,6 +91,7 @@ class RuleAssertionError(AssertionError):
                     Computed once at build time, not re-walked per run.
         history:    Ordered snapshot of (name, value) pairs the evaluator
                     recorded while walking the expression tree.
+        error_result: Optional ErrorResult if evaluation failed with an error.
     """
 
     def __init__(
@@ -68,6 +101,7 @@ class RuleAssertionError(AssertionError):
         msg: str,
         test_expr: str,
         history: Tuple[Tuple[str, Any], ...],
+        error_result: Optional[ErrorResult] = None,
     ) -> None:
         if not history:
             raise ValueError("History must not be empty")
@@ -77,6 +111,7 @@ class RuleAssertionError(AssertionError):
         self.msg = msg
         self.test_expr = test_expr
         self.history = history
+        self.error_result = error_result
 
     def build_err_msg(self) -> str:
         sev_color = self.severity.color_code
@@ -86,17 +121,9 @@ class RuleAssertionError(AssertionError):
             f"{Fore.CYAN}{self.test_expr}{Fore.RESET}",
             "",
         ]
-
-        lines.append(f"  {Style.DIM}Got:{Style.RESET_ALL}")
-        for k, v in self.history:
-            if isinstance(v, tuple):
-                lines.append(
-                    f"    {k} = {Fore.YELLOW}{v[0]!r}{Fore.RESET} "
-                    f"({Style.DIM}from{Style.RESET_ALL} {v[1]})"
-                )
-            else:
-                lines.append(f"    {k} = {Fore.YELLOW}{v!r}{Fore.RESET}")
-        lines.append("")
+        lines.extend(_format_history_lines(self.history))
+        if self.error_result is not None:
+            lines.extend(_format_error_result(self.error_result))
         lines.append(f"  {sev_color}[{self.severity.name}]{Fore.RESET} {self.msg}")
         return "\n".join(lines)
 
@@ -137,17 +164,7 @@ class AlertError(AssertionError):
             f"{Fore.CYAN}{self.field_expr}{Fore.RESET}",
             "",
         ]
-
-        lines.append(f"  {Style.DIM}Got:{Style.RESET_ALL}")
-        for k, v in self.history:
-            if isinstance(v, tuple):
-                lines.append(
-                    f"    {k} = {Fore.YELLOW}{v[0]!r}{Fore.RESET} "
-                    f"({Style.DIM}from{Style.RESET_ALL} {v[1]})"
-                )
-            else:
-                lines.append(f"    {k} = {Fore.YELLOW}{v!r}{Fore.RESET}")
-        lines.append("")
+        lines.extend(_format_history_lines(self.history))
         lines.append(f"  {sev_color}[{self.severity.name}]{Fore.RESET} {self.msg}")
         return "\n".join(lines)
 
@@ -506,6 +523,12 @@ def _build_rule_method(
         result = evaluator.evaluate(rule.test)
         history = tuple(evaluator.history)
 
+        # Check if result is an ErrorResult (evaluation error occurred)
+        error_result = None
+        if isinstance(result, ErrorResult):
+            error_result = result
+            result = False
+
         output.setdefault(namespace, []).append(
             {
                 "test": test_expr,
@@ -522,6 +545,7 @@ def _build_rule_method(
                 msg=rule.msg,
                 test_expr=test_expr,
                 history=history,
+                error_result=error_result,
             )
 
     return test
@@ -541,6 +565,7 @@ def _build_alert_method(
         field_value = evaluator.evaluate(alert.field)
         history = tuple(evaluator.history)
 
+        # field_value is not gonna be an ErrorResult
         output.setdefault(namespace, []).append(
             {
                 "field": field_expr,
