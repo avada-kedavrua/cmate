@@ -1,4 +1,4 @@
-[dependency]
+[targets]
 user_config: '大 EP 场景的用户配置文件 user_config.json，包含用户自定义的部署参数和资源分配'
 ms_coordinator: 'MS Coordinator 组件的配置文件'
 ms_controller: 'MS Controller 组件的配置文件'
@@ -6,85 +6,91 @@ mindie_env: '大 EP 场景的环境变量配置文件'
 server_init: 'Server 初始化配置文件'
 coordinator_init: 'Coordinator 初始化配置文件'
 controller_init: 'Controller 初始化配置文件'
+
+---
+[contexts]
+ep_instance: '实例配置总数'
+
 ---
 
 [par user_config]
-assert ${deploy_config.p_instance_num} * ${deploy_config.single_p_instance_pod_num} + ${deploy_config.d_instance_num} * ${deploy_config.single_d_instance_pod_num} == ${context::}, '请确保大EP实例总数与智算服务器数量匹配', error
-assert image_exists(${deploy_config.image_name}), '镜像不存在将导致大EP部署失败，请检查镜像名称是否正确', error
-assert path_exists(${deploy_config.mindie_host_log_path}), '日志路径不存在将导致部署失败，请确认路径配置是否正确', error
-assert path_exists(${deploy_config.weight_mount_path}), '权重挂载路径不存在将导致大EP部署失败，请确认路径配置是否正确', error
-assert ${deploy_config.job_id} in get_k8s_namespaces(), 'K8s命名空间与配置的Job ID保持不一致导致大EP部署失败，请确认命令空间配置是否正确', error
-alert ${deploy_config.coordinator_backup_cfg.function_enable}, '当前coordinator功能开关状态检查'
-alert ${deploy_config.controller_backup_cfg.function_sw}, '当前controller功能开关状态检查'
+assert ${deploy_config.p_instance_num} * ${deploy_config.single_p_instance_pod_num} + ${deploy_config.d_instance_num} * ${deploy_config.single_d_instance_pod_num} == ${context::ep_instance}, '校验算力拓扑规格：实例配置总数与物理服务器数量不匹配将导致算力资源无法闭环或过度分配，请核对部署规模', error
+assert image_exists(${deploy_config.image_name}), '校验部署镜像状态：镜像不存在或名称错误将导致容器启动阶段持续拉取失败（ImagePullBackOff），请确认镜像仓库路径', error
+assert path_exists(${deploy_config.mindie_host_log_path}), '校验日志持久化路径：宿主机路径缺失将导致推理引擎无法正常输出故障堆栈，请确保路径已预先创建且权限正确', error
+assert path_exists(${deploy_config.weight_mount_path}), '校验模型权重挂载点：根路径无效将导致所有节点加载专家分片失败，请确存储卷已挂载至宿主机', error
+assert ${deploy_config.job_id} in get_k8s_namespaces(), '校验命名空间一致性：Job ID 对应的 K8s Namespace 缺失将导致资源隔离失效或创建受限，请先执行环境预处理', error
+alert ${deploy_config.coordinator_backup_cfg.function_enable}, '状态确认：当前正在检查 Coordinator 容灾备份功能的开关状态'
+alert ${deploy_config.controller_backup_cfg.function_sw}, '状态确认：当前正在检查 Controller 冗余备份功能的开关状态'
 
 if ${deploy_config.coordinator_backup_cfg.function_enable} or ${deploy_config.controller_backup_cfg.function_sw}:
-    assert is_k8s_pod_running('etcd'), '', error
+    assert is_k8s_pod_running('etcd'), '校验分布式协调服务：未检测到运行中的 etcd 将导致高可用模式下的元数据无法同步，请先启动集群协调组件', error
 fi
 
-assert path_exists(${mindie_server_prefill_config.BackendConfig.ModelDeployConfig.ModelConfig[0].modelWeightPath}), 'P节点权重路径不存在将导致大EP部署失败，请确认路径配置是否正确'
-assert path_exists(${mindie_server_prefill_config.BackendConfig.ModelDeployConfig.ModelConfig[0].models.deepseekv2.eplb.expert_map_file}), 'P节点专家映射表路径不存在将导致大EP部署失败，请确认路径配置是否正确'
-assert path_exists(${mindie_server_prefill_config.BackendConfig.ModelDeployConfig.ModelConfig[0].models.deepseekv2.chat_template}), 'P节点chat templates路径不存在将导致大EP部署失败，请确认路径配置是否正确'
-assert path_exists(${mindie_server_decode_config.BackendConfig.ModelDeployConfig.ModelConfig[0].modelWeightPath}), 'D节点权重路径不存在将导致大EP部署失败，请确认路径配置是否正确'
-assert path_exists(${mindie_server_decode_config.BackendConfig.ModelDeployConfig.ModelConfig[0].models.deepseekv2.eplb.expert_map_file}), 'D节点专家映射表路径不存在将导致大EP部署失败，请确认路径配置是否正确'
-assert path_exists(${mindie_server_decode_config.BackendConfig.ModelDeployConfig.ModelConfig[0].models.deepseekv2.chat_template}), 'D节点chat templates路径不存在将导致大EP部署失败，请确认路径配置是否正确'
-
+assert path_exists(${mindie_server_prefill_config.BackendConfig.ModelDeployConfig.ModelConfig[0].modelWeightPath}), '校验P节点权重路径：Prefill 节点无法定位权重文件将导致推理引擎初始化中断，请检查 prefill 配置文件'
+assert path_exists(${mindie_server_prefill_config.BackendConfig.ModelDeployConfig.ModelConfig[0].models.deepseekv2.eplb.expert_map_file}), '校验P节点专家映射表：专家负载均衡配置文件缺失将导致推理流量分发异常，请确认 eplb 路径'
+assert path_exists(${mindie_server_prefill_config.BackendConfig.ModelDeployConfig.ModelConfig[0].models.deepseekv2.chat_template}), '校验P节点对话模板：Prompt 模板缺失将导致输入解析错误，请确认模型对应的 Jinja2 模板配置'
+assert path_exists(${mindie_server_decode_config.BackendConfig.ModelDeployConfig.ModelConfig[0].modelWeightPath}), '校验D节点权重路径：Decode 节点权重文件不全将导致专家并行推理失败，请检查 decode 配置文件'
+assert path_exists(${mindie_server_decode_config.BackendConfig.ModelDeployConfig.ModelConfig[0].models.deepseekv2.eplb.expert_map_file}), '校验D节点专家映射表：缺少此配置会导致跨节点 KV Cache 寻址失败，请确认 eplb 路径'
+assert path_exists(${mindie_server_decode_config.BackendConfig.ModelDeployConfig.ModelConfig[0].models.deepseekv2.chat_template}), '校验D节点对话模板：模板配置不一致将导致 PD 分离场景下的推理结果乱码，请同步 D 节点模板'
 ---
 
 [par ms_coordinator]
 if ${user_config::deploy_config.coordinator_backup_cfg.function_enable}:
-    assert ${backup_cfg.database_server_dns} == 'etcd.default.' + ${user_config::deploy_config.job_id} + '.cluster.local', '', error
+    assert ${backup_cfg.database_server_dns} == 'etcd.default.' + ${user_config::deploy_config.job_id} + '.cluster.local', '校验 Coordinator 数据库寻址：DNS 配置不匹配将导致备份组件无法连接 etcd 数据库，请确保集群内部解析地址正确', error
 fi
 
 ---
 
 [par ms_controller]
 if ${user_config::deploy_config.coordinator_backup_cfg.function_sw}:
-    assert ${controller_backup_cfg.database_server_dns} == 'etcd.default.' + ${user_config::deploy_config.job_id} + '.cluster.local', '', error
+    assert ${controller_backup_cfg.database_server_dns} == 'etcd.default.' + ${user_config::deploy_config.job_id} + '.cluster.local', '校验 Controller 数据库寻址：DNS 配置错误将导致双机热备的心跳检测失败，请核对 etcd 连接字符串', error
 fi
 
 ---
 
 [par mindie_env]
 if ${contexnt::npu_type} == 'A2':
-    assert ${mindie_server_decode_env.HCCL_INTRA_PCIE_ENABLE} == 1 and ${mindie_server_decode_env.HCCL_INTRA_ROCE_ENABLE} == 0, 'D节点配置 HCCL_INTRA_PCIE_ENABLE 和 HCCL_INTRA_ROCE_ENABLE 不合理会导致大EP性能劣化', info
+    assert ${mindie_server_decode_env.HCCL_INTRA_PCIE_ENABLE} == 1 and ${mindie_server_decode_env.HCCL_INTRA_ROCE_ENABLE} == 0, '校验 A2 通信优化参数：错误的 HCCL 通信链路配置会导致大 EP 节点间通信延时剧增甚至性能劣化，请按 A2 推荐值设置', info
 fi
 
 ---
 
 [par server_init]
-assert ${metadata.namespace} == ${user_config::deploy_config.job_id}, 'metadata下的namespace字段如果和user_config.json文件中，deploy_config下的job_id不一致，将导致大EP部署失败', error
+assert ${metadata.namespace} == ${user_config::deploy_config.job_id}, '校验 Server 归属空间：Namespace 与 Job ID 不对齐将导致算力任务无法被资源管理器正常监控，请同步两处配置', error
 
 for key, value in ${[2].spec.replicasSpecs.Master.template.spec.nodeSelector}:
-    assert get_k8s_labeled_nodes(key, value) == ${deploy_config.p_instance_num} * ${deploy_config.single_p_instance_pod_num} + ${deploy_config.d_instance_num} * ${deploy_config.single_d_instance_pod_num}, '', error
-fi
+    assert get_k8s_labeled_nodes(key, value) == ${deploy_config.p_instance_num} * ${deploy_config.single_p_instance_pod_num} + ${deploy_config.d_instance_num} * ${deploy_config.single_d_instance_pod_num}, '校验 Master 节点亲和性：满足标签条件的物理机数量不足将导致 Pod 持续 Pending 无法调度，请检查集群节点标签', error
+done
 
 for key, value in ${[2].spec.replicasSpecs.Worker.template.spec.nodeSelector}:
-    assert get_k8s_labeled_nodes(key, value) == ${deploy_config.p_instance_num} * ${deploy_config.single_p_instance_pod_num} + ${deploy_config.d_instance_num} * ${deploy_config.single_d_instance_pod_num}, '', error
-fi
+    assert get_k8s_labeled_nodes(key, value) == ${deploy_config.p_instance_num} * ${deploy_config.single_p_instance_pod_num} + ${deploy_config.d_instance_num} * ${deploy_config.single_d_instance_pod_num}, '校验 Worker 节点亲和性：匹配标签的计算资源不足将导致大 EP 计算集群无法完整启动，请核对计算节点池规模', error
+done
 
-assert check_k8s_memory_available(${spec.replicasSpecs.Master.template.spec.containers[0].resources.requests.memory} >= get_available_memory()), '', error
-assert ${spec.replicasSpecs.Master.template.spec.containers[0].resources.requests.huawei.com/Ascend910} >= ${user_config::deploy_config.p_pod_npu_num}, '', error
+assert check_k8s_memory_available(${spec.replicasSpecs.Master.template.spec.containers[0].resources.requests.memory} >= get_available_memory()), '校验集群内存阈值：容器申请内存超过节点物理上限将导致频繁 OOM 杀进程，请调整内存请求或释放物理内存', error
+assert ${spec.replicasSpecs.Master.template.spec.containers[0].resources.requests.huawei.com/Ascend910} >= ${user_config::deploy_config.p_pod_npu_num}, '校验 NPU 资源申请：申请的 NPU 芯片数低于模型运行最低要求将导致推理服务启动失败，请核对昇腾算力配置', error
 
 ---
 
 [par coordinator_init]
-assert ${metadata.namespace} == ${user_config::deploy_config.job_id}, 'metadata下的namespace字段如果和user_config.json文件中，deploy_config下的job_id不一致，将导致大EP部署失败', error
+assert ${metadata.namespace} == ${user_config::deploy_config.job_id}, '校验 Coordinator 归属空间：Namespace 错误将导致控制面与数据面连接中断，请核对初始化模板', error
 
 for key, value in ${spec.replicasSpecs.Master.template.spec.nodeSelector}:
     if ${user_config::deploy_config.coordinator_backup_cfg.function_enable}:
-        assert get_k8s_labeled_nodes(key, value) >= 2, '', error
+        assert get_k8s_labeled_nodes(key, value) >= 2, '校验容灾节点规模：候选节点少于 2 台将导致 Coordinator 备份机制失效无法容忍单点故障，请增加打标节点', error
     else:
-        assert get_k8s_labeled_nodes(key, value) >= 1, '', error
+        assert get_k8s_labeled_nodes(key, value) >= 1, '校验部署节点可用性：找不到匹配标签的节点将导致 Coordinator 组件部署失败，请确认节点标签配置', error
     fi
-fi
+done
+
+---
 
 [par controller_init] # deployment/controller_init.yaml
-assert ${metadata.namespace} == ${user_config::deploy_config.job_id}, 'metadata下的namespace字段如果和user_config.json文件中，deploy_config下的job_id不一致，将导致大EP部署失败', error
+assert ${metadata.namespace} == ${user_config::deploy_config.job_id}, '校验 Controller 归属空间：Namespace 冲突会导致多任务环境下的集群调度逻辑紊乱，请核对 Job ID 映射', error
 
 for key, value in ${spec.replicasSpecs.Master.template.spec.nodeSelector}:
     if ${user_config::deploy_config.coordinator_backup_cfg.function_enable}:
-        assert get_k8s_labeled_nodes(key, value) >= 2, '', error
+        assert get_k8s_labeled_nodes(key, value) >= 2, '校验 Controller 备份条件：节点数量不足以支撑双机热备架构，单点故障将导致整个集群无法调度，请补齐节点标签', error
     else:
-        assert get_k8s_labeled_nodes(key, value) >= 1, '', error
+        assert get_k8s_labeled_nodes(key, value) >= 1, '校验部署节点可用性：无可用标签节点会导致 Controller 无法承载大 EP 管理流量，请检查标签配置', error
     fi
-fi
+done
