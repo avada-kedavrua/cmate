@@ -33,6 +33,7 @@ CMate solves this by using **context variables** to manage scenario switching, a
 - **Context-driven**: Pass context variables via `-C` to adapt the same rule file to different deployment scenarios
 - **Three severity levels**: `error` (mandatory) / `warning` (alert) / `info` (recommendation), filterable at runtime
 - **Multiple data sources**: Validate JSON, YAML config files and environment variables
+- **Env script generation**: Automatically generates `set_env.sh` from `[par env]` rules — `source` it to apply or revert environment variables
 - **pytest-style output**: Collection, execution, and reporting follow pytest conventions
 - **Control flow**: `if/elif/else/fi` conditionals and `for/done` loops
 - **Extensible functions**: Built-in `len()`, `int()`, `str()`, etc., with custom extensions via `custom_fn.py`
@@ -59,7 +60,7 @@ pip install -e .
 
 ## Quick Start
 
-### 1. Write a rule file
+> For a full walkthrough, see the [Quick Start Guide](docs/en/quick_start.md).
 
 Create `demo.cmate`:
 
@@ -90,8 +91,6 @@ assert ${config::host} != '', 'Hostname must not be empty', error
 assert ${config::timeout} >= 1000, 'Recommended timeout >= 1000ms', info
 ```
 
-### 2. Prepare a config file
-
 Create `app.json`:
 
 ```json
@@ -102,36 +101,32 @@ Create `app.json`:
 }
 ```
 
-### 3. Run validation
+Run:
 
 ```bash
-# Basic run
 cmate run demo.cmate -c config:app.json -C env:production
-
-# Collect rules only, without executing
-cmate run demo.cmate -c config:app.json -C env:dev --collect-only
-
-# Inspect rule file dependencies
-cmate inspect demo.cmate
 ```
 
-Output follows the pytest style:
+## Environment Variable Script Generation
 
+When a rule file contains a `[par env]` section, `cmate run` automatically generates a `set_env.sh` script in the current directory. The script sets (or unsets) environment variables to match the expected values declared in your rules:
+
+```bash
+# Apply the recommended environment variables
+source set_env.sh
+
+# Revert to the values before cmate was run
+source set_env.sh 0
 ```
-collected 3 items
 
-config .F.                                                           [100%]
+Customize the output path or disable generation:
 
-============================== FAILURES ==============================
-___________________ [config] test_5 ___________________
+```bash
+# Custom path
+cmate run rules.cmate -c env --env-script /tmp/my_env.sh
 
-  Expected: ${config::timeout} >= 1000
-  Got:
-    ${config::timeout} = 500
-
-  [RECOMMEND] Recommended timeout >= 1000ms
-
-=================== 1 failed, 2 passed in 0.003s ====================
+# Disable generation
+cmate run rules.cmate -c env --no-env-script
 ```
 
 ## Rule File Syntax

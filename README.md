@@ -33,6 +33,7 @@ CMate 通过 **context（上下文变量）** 来管理场景切换，通过 **s
 - **上下文驱动**：通过 `-C` 传入 context 变量，同一份规则文件可适配不同部署场景
 - **三级严重度**：`error`（强制）/ `warning`（告警）/ `info`（推荐），按需过滤执行
 - **多数据源**：支持 JSON、YAML 配置文件及环境变量作为校验目标
+- **环境变量脚本生成**：自动根据 `[par env]` 规则生成 `set_env.sh`，一键 `source` 即可设置或还原环境变量
 - **pytest 风格输出**：收集、执行、报告的展示风格借鉴 pytest，对开发者友好
 - **条件与循环**：支持 `if/elif/else/fi` 条件分支和 `for/done` 循环
 - **可扩展函数**：内置 `len()`、`int()`、`str()` 等函数，支持在 `custom_fn.py` 中自定义扩展
@@ -59,9 +60,9 @@ pip install -e .
 
 ## 快速开始
 
-### 1. 编写规则文件
+> 完整的快速上手教程请查看 [详细指南](docs/zh/quick_start.md)。
 
-创建 `demo.cmate`：
+创建规则文件 `demo.cmate`：
 
 ```
 [metadata]
@@ -90,9 +91,7 @@ assert ${config::host} != '', '主机名不能为空', error
 assert ${config::timeout} >= 1000, '建议超时时间 >= 1000ms', info
 ```
 
-### 2. 准备配置文件
-
-创建 `app.json`：
+准备 `app.json`：
 
 ```json
 {
@@ -102,36 +101,32 @@ assert ${config::timeout} >= 1000, '建议超时时间 >= 1000ms', info
 }
 ```
 
-### 3. 运行校验
+运行：
 
 ```bash
-# 基本运行
 cmate run demo.cmate -c config:app.json -C env:production
-
-# 仅收集规则，不执行
-cmate run demo.cmate -c config:app.json -C env:dev --collect-only
-
-# 查看规则文件依赖信息
-cmate inspect demo.cmate
 ```
 
-输出风格类似 pytest：
+## 环境变量脚本生成
 
+当规则文件中包含 `[par env]` 段时，`cmate run` 会自动在当前目录生成 `set_env.sh` 脚本。该脚本根据规则中的期望值，一键设置或还原环境变量：
+
+```bash
+# 应用规则推荐的环境变量
+source set_env.sh
+
+# 还原为运行 cmate 之前的值
+source set_env.sh 0
 ```
-collected 3 items
 
-config .F.                                                           [100%]
+自定义输出路径或禁用生成：
 
-============================== FAILURES ==============================
-___________________ [config] test_5 ___________________
+```bash
+# 自定义路径
+cmate run rules.cmate -c env --env-script /tmp/my_env.sh
 
-  Expected: ${config::timeout} >= 1000
-  Got:
-    ${config::timeout} = 500
-
-  [RECOMMEND] 建议超时时间 >= 1000ms
-
-=================== 1 failed, 2 passed in 0.003s ====================
+# 禁用生成
+cmate run rules.cmate -c env --no-env-script
 ```
 
 ## 规则文件语法
@@ -254,6 +249,8 @@ cmate run <rule_file> [选项]
   -k, --lines     按行号筛选规则: '10,20,30'
   -co, --collect-only  仅收集并列出规则，不执行
   --output-path   JSON 结果文件输出目录
+  --env-script    环境变量脚本输出路径（默认 set_env.sh）
+  --no-env-script 禁用环境变量脚本生成
 
 # 查看规则文件信息
 cmate inspect <rule_file> [选项]
