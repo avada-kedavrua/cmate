@@ -81,13 +81,13 @@ class Assign(Stmt):
 
 
 class Desc(Stmt):
-    __slots__ = ("target", "desc", "parse_type")
+    __slots__ = ("target", "desc", "parse_format")
 
-    def __init__(self, lineno, col_offset, target, desc, parse_type):
+    def __init__(self, lineno, col_offset, target, desc, parse_format):
         super().__init__(lineno, col_offset)
         self.target = target
         self.desc = desc
-        self.parse_type = parse_type
+        self.parse_format = parse_format
 
 
 class For(Stmt):

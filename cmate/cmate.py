@@ -24,10 +24,10 @@ from datetime import datetime
 from typing import List, Optional, Tuple, Dict, Any
 
 from . import _ast
-from ._test import make_test_suite, RuleTestRunner
-from .data_source import DataSource, NAType
+from .util import ParseFormat, ParseFormatError, load_from_file
 from .parser import Parser
-from .util import load
+from .data_source import DataSource, NAType
+from ._test import make_test_suite, RuleTestRunner
 from .visitor import (
     AssignmentProcessor,
     ASTFormatter,
@@ -35,6 +35,7 @@ from .visitor import (
     InfoCollector,
     RuleCollector,
 )
+
 
 LOG_LEVELS = {
     "debug":    logging.DEBUG,
@@ -45,58 +46,81 @@ LOG_LEVELS = {
 }
 LOG_FORMAT = "[%(levelname)s] [%(name)s] %(message)s"
 
-
 logger = logging.getLogger(__name__)
 
 
-def _parse_configs(configs: Optional[List[str]]) -> Dict[str, Tuple[str, str]]:
+# ---------------------------------------------------------------------------
+# Custom exceptions
+# ---------------------------------------------------------------------------
+
+class CmateError(Exception):
+    """Base class for all cmate errors."""
+
+
+class ConfigError(CmateError):
+    """Raised when a config file cannot be parsed or loaded."""
+
+
+class ValidationError(CmateError):
+    """Raised when dependency validation fails (missing targets / contexts)."""
+
+
+class RuleCollectionError(CmateError):
+    """Raised when rule collection fails due to unresolved namespace references."""
+
+
+# ---------------------------------------------------------------------------
+# CLI argument parsing
+# ---------------------------------------------------------------------------
+
+def _parse_configs(configs: Optional[List[str]]) -> Dict[str, Tuple[Optional[Path], ParseFormat]]:
     """
-    Parse '-c' arguments of the form '<name>:<path>[@<parse_type>]' or 'env'.
+    Parse '-c' arguments of the form '<name>:<path>[@<parse_format>]' or 'env'.
 
-    Args:
-        configs (Optional[List[str]]): List of configs of the form '<name>:<path>[@<parse_type>]' or 'env'.
-
-    Returns:
-        Dict[str, Tuple[str, str]]: The parsed configs.
-        
     Raises:
-        ValueError: If a config is not of the form '<name>:<path>[@<parse_type>]' or 'env'.    
+        ValueError: If an entry is not of the expected form.
+        ParseFormatError: If an unsupported parse format is specified.
     """
     result = {}
-
     if not configs:
         return result
 
     for entry in configs:
         if entry == "env":
-            result["env"] = (None, None)
+            result["env"] = (None, ParseFormat.UNKNOWN)
             continue
 
         parts = entry.split(":", 1)
         if len(parts) != 2:
-            raise ValueError(f"`configs` parameter expected to be a list of '<name>:<path>[@<parse_type>]' or 'env', got: {configs!r}")
+            raise ValueError(
+                f"`configs` expected '<name>:<path>[@<parse_format>]' or 'env', got: {entry!r}"
+            )
 
         name = parts[0]
         fields = parts[1].split("@", 1)
-        path = fields[0]
-        parse_type = fields[1] if len(fields) == 2 else None
-        result[name] = (path, parse_type)
+        path = Path(fields[0])
+        parse_format = ParseFormat.UNKNOWN
+
+        if len(fields) == 2:
+            try:
+                parse_format = ParseFormat(fields[1])
+            except ValueError as e:
+                raise ParseFormatError(
+                    f"Unsupported parse format: {fields[1]!r}. "
+                    f"Supported: {list(ParseFormat.__members__)}"
+                ) from e
+
+        result[name] = (path, parse_format)
 
     return result
 
 
-def _parse_contexts(contexts: Optional[List[str]]) -> Dict[str, str]:
+def _parse_contexts(contexts: Optional[List[str]]) -> Dict[str, Any]:
     """
     Parse '-C' arguments of the form '<name>:<value>'.
-    
-    Args:
-        contexts (Optional[List[str]]): List of contexts of the form '<name>:<value>'.
 
-    Returns:
-        Dict[str, str]: The parsed contexts.
-        
     Raises:
-        ValueError: If a context is not of the form '<name>:<value>'.
+        ValueError: If an entry is not of the expected form.
     """
     result = {}
     if not contexts:
@@ -105,9 +129,14 @@ def _parse_contexts(contexts: Optional[List[str]]) -> Dict[str, str]:
     for entry in contexts:
         parts = entry.split(":", 1)
         if len(parts) != 2:
-            raise ValueError(f"`contexts` parameter expected to be a list of '<name>:<value>', got: {contexts!r}")
+            raise ValueError(
+                f"`contexts` expected '<name>:<value>', got: {entry!r}"
+            )
 
         name, raw = parts
+        if name in result:
+            logger.warning("Duplicate context name: %r – overwritten.", name)
+
         try:
             result[name] = ast.literal_eval(raw)
         except (ValueError, SyntaxError):
@@ -120,45 +149,53 @@ def _parse_contexts(contexts: Optional[List[str]]) -> Dict[str, str]:
 # Dependency validation and data loading
 # ---------------------------------------------------------------------------
 
-def _validate_and_load_dependencies(
-    info: Dict[str, Any], input_targets: Dict[str, Tuple[str, str]], input_contexts: Dict[str, str]
-) -> Tuple[bool, DataSource]:
+def _load_dependencies(
+    info: Dict[str, Any],
+    input_targets: Dict[str, Tuple[Path, ParseFormat]],
+    input_contexts: Dict[str, str],
+) -> DataSource:
     """
-    Validate that the user supplied at least one recognised target, check that
-    all required dependencies are present, then load files into a DataSource.
-    """
-    input_targets  = input_targets  or {}
-    input_contexts = input_contexts or {}
+    Validate supplied targets/contexts and load them into a DataSource.
 
+    Raises:
+        ValidationError: If no recognised targets are supplied, or required
+                         dependencies are missing.
+        ConfigError: If a config file cannot be read or parsed (propagated
+                     from _load_targets).
+    """
     all_targets  = info["targets"]
     all_contexts = info["contexts"]
     data_source  = DataSource()
 
-    ok, matched = _load_targets(input_targets, all_targets, data_source)
-    if not ok:
-        return False, data_source
+    matched = _load_targets(input_targets, all_targets, data_source)
 
     if not matched:
-        logger.error(
-            "No recognised targets supplied. The rule file supports: %s",
-            list(all_targets.keys()),
+        raise ValidationError(
+            f"No recognised targets supplied. "
+            f"The rule file supports: {list(all_targets.keys())}"
         )
-        return False, data_source
 
     missing = _collect_missing(matched, input_targets, input_contexts, all_targets)
     if missing:
-        _log_missing(missing, all_targets, all_contexts)
-        return False, data_source
+        raise ValidationError(_format_missing(missing, all_targets, all_contexts))
 
     _load_contexts(input_contexts, all_contexts, data_source)
-    return True, data_source
+    return data_source
 
 
-def _load_targets(input_targets: dict, all_targets: dict,
-                  data_source: DataSource) -> Tuple[bool, list]:
-    """Load targets from the user-supplied config files."""
+def _load_targets(
+    input_targets: Dict[str, Tuple[Path, ParseFormat]],
+    all_targets: Dict[str, Dict[str, Any]],
+    data_source: DataSource,
+) -> List[str]:
+    """
+    Load each recognised target into data_source and return the matched names.
+
+    Raises:
+        ConfigError: If a target file cannot be read or parsed.
+    """
     matched = []
-    for target, (path, parse_type) in input_targets.items():
+    for target, (path, parse_format) in input_targets.items():
         if target not in all_targets:
             logger.warning(
                 "Target %r not defined in the rule file – skipped. "
@@ -172,43 +209,34 @@ def _load_targets(input_targets: dict, all_targets: dict,
             data_source.flatten("env", dict(os.environ))
             continue
 
-        effective_parse_type = parse_type or all_targets[target].get("parse_type")
+        effective_format = parse_format or all_targets[target].get("parse_format")
         try:
-            data = load(path, effective_parse_type)
-        except OSError:
-            logger.error(
-                "Target %r not found at %r. Check the path.", target, path
-            )
-            return False, matched
-        except TypeError:
-            logger.error(
-                "Unsupported parse type %r for target %r at %r. "
-                "Specify one with '-c %s:%s@<type>'.",
-                effective_parse_type, target, path, target, path,
-            )
-            return False, matched
-        except Exception:
-            logger.exception(
-                "Failed to parse target %r from %r.", target, path
-            )
-            return False, matched
+            data = load_from_file(path, effective_format)
+        except (OSError, ParseFormatError) as e:
+            raise ConfigError(
+                f"Failed to load target {target!r} from {path}: {e}"
+            ) from e
 
         data_source.flatten(target, data)
 
-    return True, matched
+    return matched
 
 
-def _collect_missing(matched: List[str], input_targets: Dict[str, Tuple[str, str]], input_contexts: Dict[str, str],
-                     all_targets: Dict[str, Dict[str, List[str]]]) -> Dict[str, Dict[str, List[str]]]:
-    """Collect missing dependencies for the given targets and input configs."""
+def _collect_missing(
+    matched: List[str],
+    input_targets: Dict[str, Any],
+    input_contexts: Dict[str, str],
+    all_targets: Dict[str, Dict[str, List[str]]],
+) -> Dict[str, Dict[str, List[str]]]:
+    """Return a dict of targets that have unsatisfied dependencies."""
     missing = {}
     for target in matched:
-        info = all_targets[target]
-        req_targets  = info.get("required_targets")  or []
-        req_contexts = info.get("required_contexts") or []
+        info         = all_targets[target]
+        required_targets  = info.get("required_targets")  or []
+        required_contexts = info.get("required_contexts") or []
 
-        absent_targets  = [t for t in req_targets  if t not in input_targets]
-        absent_contexts = [c for c in req_contexts if c not in input_contexts]
+        absent_targets  = [target for target in required_targets  if target not in input_targets]
+        absent_contexts = [context for context in required_contexts if context not in input_contexts]
 
         if absent_targets or absent_contexts:
             missing[target] = {
@@ -218,20 +246,23 @@ def _collect_missing(matched: List[str], input_targets: Dict[str, Tuple[str, str
     return missing
 
 
-def _log_missing(missing: Dict[str, Dict[str, List[str]]], all_targets: Dict[str, Dict[str, List[str]]], all_contexts: Dict[str, Dict[str, List[str]]]) -> None:
-    """Log missing dependencies for the given targets and input configs."""
+def _format_missing(
+    missing: Dict[str, Dict[str, List[str]]],
+    all_targets: Dict[str, Dict[str, Any]],
+    all_contexts: Dict[str, Dict[str, Any]],
+) -> str:
+    """Format missing-dependency info as a human-readable string."""
     parts = []
     for target, m in missing.items():
         parts.append(f"Target {target!r} is missing required dependencies:")
         for t in m["targets"]:
-            info = all_targets.get(t, {})
-            desc = info.get("desc") or "No description available."
+            desc = all_targets.get(t, {}).get("desc") or "No description available."
             parts.append(f"  - {t}: {desc}")
         for c in m["contexts"]:
-            info = all_contexts.get(c, {})
-            ctx_desc = info.get("desc")
-            desc = ctx_desc[0] if isinstance(ctx_desc, tuple) else "No description."
-            opts = info.get("options", [])
+            ctx   = all_contexts.get(c, {})
+            raw   = ctx.get("desc")
+            desc  = raw[0] if isinstance(raw, tuple) else "No description."
+            opts  = ctx.get("options", [])
             parts.append(f"  - {c}: {opts}")
             parts.append(f"      {desc}")
         parts.append("")
@@ -241,12 +272,15 @@ def _log_missing(missing: Dict[str, Dict[str, List[str]]], all_targets: Dict[str
         "  -c <target>:<path>   to supply a missing config target\n"
         "  -C <context>:<value> to supply a missing context variable"
     )
-    logger.error("\n".join(parts))
+    return "\n".join(parts)
 
 
-def _load_contexts(input_contexts: Dict[str, str], all_contexts: Dict[str, Dict[str, List[str]]],
-                   data_source: DataSource) -> None:
-    """Load contexts from the user-supplied config files."""
+def _load_contexts(
+    input_contexts: Dict[str, str],
+    all_contexts: Dict[str, Dict[str, Any]],
+    data_source: DataSource,
+) -> None:
+    """Write recognised context values into data_source; warn and skip others."""
     for ctx, value in input_contexts.items():
         if ctx not in all_contexts:
             logger.warning(
@@ -257,12 +291,16 @@ def _load_contexts(input_contexts: Dict[str, str], all_contexts: Dict[str, Dict[
         data_source[f"context::{ctx}"] = value
 
 
+# ---------------------------------------------------------------------------
+# Display helpers
+# ---------------------------------------------------------------------------
+
 def _display_text(info: Dict[str, Any]) -> None:
     """Display rule file info in human-readable format."""
     for attr in ("metadata", "targets", "contexts"):
         if attr not in info:
-            logger.critical("Required key %r missing from info dict.", attr)
-            return
+            raise KeyError(f"Required key {attr!r} missing from info dict.")
+
     _print_section("Overview")
     if info["metadata"]:
         for k, v in info["metadata"].items():
@@ -285,16 +323,16 @@ def _display_text(info: Dict[str, Any]) -> None:
     if info["targets"]:
         for name, tinfo in info["targets"].items():
             _print_section(name, level=2)
-            desc = tinfo["desc"] or "No description."
-            parse_type = tinfo["parse_type"] or "Unknown"
+            desc         = tinfo["desc"] or "No description."
+            parse_format = tinfo["parse_format"] or "Unknown"
             req_targets  = tinfo["required_targets"]
             req_contexts = tinfo["required_contexts"]
 
             if name == "env":
                 _print_field("description", "Environment variable validation", indent=4)
             else:
-                _print_field("type",        parse_type, indent=4)
-                _print_field("description", desc,       indent=4)
+                _print_field("type",        parse_format, indent=4)
+                _print_field("description", desc,         indent=4)
 
             if req_targets:
                 _print_field("required_targets",  ", ".join(req_targets),  indent=4)
@@ -313,34 +351,37 @@ def _display_json(info: Dict[str, Any]) -> None:
     print(json.dumps(info, indent=4, ensure_ascii=False))
 
 
-def _print_section(title: str, level: int = 0):
-    """Print a section header."""
+def _print_section(title: str, level: int = 0) -> None:
     indent = "  " * level
     print(f"{indent}{title}\n{indent}{'-' * len(title)}")
 
 
-def _print_field(label, value, indent: int = 0):
-    """Print a field in the format: <label> : <value>."""
+def _print_field(label: str, value: Any, indent: int = 0) -> None:
     print(f"{'  ' * indent}{label} : {value}")
 
 
 class _NAEncoder(json.JSONEncoder):
-    """JSON encoder that converts NAType instances to a dictionary."""
     def default(self, obj):
         if isinstance(obj, NAType):
             return {"NAType": True}
         return super().default(obj)
 
 
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
 def parse(rule_path: Path) -> _ast.Document:
     """Parse a cmate rule file and return the Document AST node."""
     if not isinstance(rule_path, Path):
         rule_path = Path(rule_path)
-    
+
     rule_path = rule_path.resolve()
-    
+
+    if not rule_path.exists():
+        raise FileNotFoundError(f"Rule file not found: {rule_path}")
     if not rule_path.is_file():
-        raise OSError(f"Rule file is not a file: {rule_path}")
+        raise IsADirectoryError(f"Rule path is not a file: {rule_path}")
 
     return Parser().parse(rule_path.read_text(encoding="utf-8"))
 
@@ -353,7 +394,7 @@ def inspect(rule_path: Path, output_format: str = "text") -> None:
 
     node = parse(rule_path)
     info = InfoCollector().collect(node)
-    return formatters[output_format](info)
+    formatters[output_format](info)
 
 
 def run(
@@ -363,46 +404,40 @@ def run(
     failfast: bool = False,
     verbosity: bool = False,
     collect_only: bool = False,
-    output_path: str = "",
+    output_path: Optional[Path] = None,
     severity: str = "info",
 ) -> int:
     """Validate configurations against rules defined in a cmate rule file.
-    
-    Args:
-        rule_path (str): Path to the cmate rule file. The rule file should be in the cmate rule language and follow the cmate syntax.
-        configs (List[str]): List of config files to validate. Each config file should be in the format '<name>:<path>[@<type>]' or 'env'.
-        contexts (List[str]): List of context variables to use. Each context variable should be in the format '<name>:<value>'.
-        failfast (bool): Whether to stop validation on the first failure. If set to True, the validation will terminate immediately upon encountering the first failure.
-        verbosity (bool): Whether to print verbose output. If set to True, the output will include more detailed information about the validation process.
-        collect_only (bool): Whether to collect rules without executing them. If set to True, the tool will only collect the rules and display them in a human-readable format.
-        output_path (str): Directory path for the JSON result file. If not specified, the result will be printed to stdout.
-        severity (str): Minimum severity level of rules to execute. Valid values are "info", "warning", and "error". If not specified, all rules will be executed.
-    
+
     Returns:
-        int: 0 on success, 1 on failure.
+        0 on success, 1 on failure.
+
+    Raises:
+        ValueError, ParseFormatError: For malformed CLI arguments.
+        FileNotFoundError, IsADirectoryError: If the rule file is missing.
+        ValidationError: If required targets / contexts are absent.
+        ConfigError: If a config file cannot be loaded.
+        RuleCollectionError: If rule collection fails due to missing namespace.
     """
-    configs = _parse_configs(configs)
-    contexts = _parse_contexts(contexts)
+    breakpoint()
+    parsed_configs  = _parse_configs(configs)
+    parsed_contexts = _parse_contexts(contexts)
 
     node = parse(rule_path)
     info = InfoCollector().collect(node)
 
-    ok, data_source = _validate_and_load_dependencies(info, configs, contexts)
-    if not ok:
-        return 1
+    data_source = _load_dependencies(info, parsed_configs, parsed_contexts)
 
-    AssignmentProcessor(configs or {}, data_source).process(node)
+    AssignmentProcessor(parsed_configs, data_source).process(node)
 
     try:
-        ruleset = RuleCollector(configs or {}, data_source, severity).collect(node)
-    except KeyError:
-        logger.exception(
-            "Rule collection failed – likely a namespace referenced without "
-            "being listed in dependencies or the partition section."
-        )
-        return 1
+        ruleset = RuleCollector(parsed_configs, data_source, severity).collect(node)
+    except KeyError as e:
+        raise RuleCollectionError(
+            f"Rule collection failed – namespace {e} is referenced but not listed "
+            "in dependencies or the partition section."
+        ) from e
 
-    # Generate env script only when an env partition exists
     EnvironmentScriptGenerator(data_source).generate(node)
 
     if collect_only:
@@ -412,7 +447,6 @@ def run(
 
 
 def _show_collected(ruleset: Dict[str, List[_ast.Rule]]) -> int:
-    """Display the collected rules in a human-readable format."""
     formatter = ASTFormatter()
     lines = []
     for ns, rules in ruleset.items():
@@ -423,23 +457,31 @@ def _show_collected(ruleset: Dict[str, List[_ast.Rule]]) -> int:
     return 0
 
 
-def _execute(ruleset: Dict[str, List[_ast.Rule]], data_source: DataSource,
-             failfast: bool, verbosity: bool, output_path: str) -> int:
-    """Execute the collected rules and return the result."""
-    runner = RuleTestRunner(failfast=failfast, verbosity=verbosity)
+def _execute(
+    ruleset: Dict[str, List[_ast.Rule]],
+    data_source: DataSource,
+    failfast: bool,
+    verbosity: bool,
+    output_path: Optional[Path],
+) -> int:
+    runner     = RuleTestRunner(failfast=failfast, verbosity=verbosity)
     result_log: dict = {}
-    suite = make_test_suite(data_source, ruleset, result_log)
+    suite  = make_test_suite(data_source, ruleset, result_log)
     result = runner.run(suite)
 
     if output_path:
         ts = datetime.now().strftime("%Y%m%d%H%M%S")
-        os.makedirs(output_path, exist_ok=True)
-        out_file = os.path.join(output_path, f"msprechecker_{ts}_output.json")
-        with open_s(out_file, "w", encoding="utf-8") as f:
-            json.dump(result_log, f, cls=_NAEncoder, ensure_ascii=False, indent=4)
+        output_path.mkdir(mode=0o750, parents=True, exist_ok=True)
+
+        out_file = output_path / f"cmate_{ts}_output.json"
+        out_file.write_text(json.dumps(result_log, cls=_NAEncoder, ensure_ascii=False, indent=4))
 
     return 0 if result.wasSuccessful() else 1
 
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
 
 def main(args: Optional[List[str]] = None) -> int:
     """Main entry point for the cmate command-line tool."""
@@ -450,55 +492,70 @@ def main(args: Optional[List[str]] = None) -> int:
     )
     global_parser = argparse.ArgumentParser(add_help=False)
     global_parser.add_argument("-l", "--log-level", choices=LOG_LEVELS, default="info",
-                    help="Logging verbosity")
+                               help="Logging verbosity")
     global_parser.add_argument("rule", type=Path, help="Path to the cmate rule file")
 
-    subparser = parser.add_subparsers(dest="command", required=False)
+    subparsers = parser.add_subparsers(dest="command", required=False)
 
     # -- run -----------------------------------------------------------------
-    run_parser = subparser.add_parser("run", parents=[global_parser], help="Validate configurations against rules")
+    run_parser = subparsers.add_parser("run", parents=[global_parser],
+                                       help="Validate configurations against rules")
     run_parser.add_argument("--configs", "-c", nargs="*",
-                    help="Config files: '<name>:<path>[@<type>]' or 'env'")
+                            help="Config files: '<name>:<path>[@<type>]' or 'env'")
     run_parser.add_argument("--contexts", "-C", nargs="*",
-                    help="Context variables: '<name>:<value>'")
+                            help="Context variables: '<name>:<value>'")
     run_parser.add_argument("-co", "--collect-only", action="store_true",
-                    help="List rules without executing them")
+                            help="List rules without executing them")
     run_parser.add_argument("--output-path", type=Path,
-                    help="Directory for the JSON result file")
+                            help="Directory for the JSON result file")
     run_parser.add_argument("-x", "--fail-fast", action="store_true", dest="failfast",
-                    help="Stop on first failure")
+                            help="Stop on first failure")
     run_parser.add_argument("-v", "--verbose", action="store_true", dest="verbose",
-                    help="Verbose test output")
-    run_parser.add_argument("-s", "--severity",
-                    choices=["info", "warning", "error"], default="info",
-                    help="Minimum severity to execute (default: info)")
+                            help="Verbose test output")
+    run_parser.add_argument("-s", "--severity", choices=["info", "warning", "error"],
+                            default="info", help="Minimum severity to execute (default: info)")
 
     # -- inspect -------------------------------------------------------------
-    inspect_parser = subparser.add_parser("inspect", parents=[global_parser], help="Show rule file requirements")
+    inspect_parser = subparsers.add_parser("inspect", parents=[global_parser],
+                                           help="Show rule file requirements")
     inspect_parser.add_argument("--format", "-f", choices=["text", "json"], default="text",
-                    help="Output format (default: text)")
+                                help="Output format (default: text)")
 
-    args = parser.parse_args(args)
-    if not args.command:
+    parsed = parser.parse_args(args)
+    if not parsed.command:
         parser.print_help()
         return 1
 
-    logging.basicConfig(format=LOG_FORMAT, level=LOG_LEVELS[args.log_level])
-    if args.command == "inspect":
+    logging.basicConfig(format=LOG_FORMAT, level=LOG_LEVELS[parsed.log_level])
+
+    # All CmateError subclasses represent expected, user-facing failures.
+    # Everything else is an unexpected bug and gets a full traceback.
+    if parsed.command == "inspect":
         try:
-            inspect(args.rule, args.format)
-        except (OSError, ValueError):
-            logger.exception("Error inspecting rule file")
+            inspect(parsed.rule, parsed.format)
+        except (OSError, ValueError, CmateError) as e:
+            logger.error("%s", e)
+            return 1
+        except Exception:
+            logger.exception("Unexpected error during inspect")
             return 1
         return 0
 
-    return run(
-        args.rule,
-        args.configs,
-        args.contexts,
-        args.failfast,
-        args.verbose,
-        args.collect_only,
-        args.output_path,
-        args.severity,
-    )
+    # run
+    try:
+        return run(
+            parsed.rule,
+            parsed.configs,
+            parsed.contexts,
+            parsed.failfast,
+            parsed.verbose,
+            parsed.collect_only,
+            parsed.output_path,
+            parsed.severity,
+        )
+    except (OSError, ValueError, ParseFormatError, CmateError) as e:
+        logger.error("%s", e)
+        return 1
+    except Exception:
+        logger.exception("Unexpected error during run")
+        return 1

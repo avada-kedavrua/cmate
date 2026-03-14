@@ -15,7 +15,7 @@
 # -------------------------------------------------------------------------
 
 from collections import defaultdict, deque
-from typing import Tuple
+from typing import Dict, Tuple
 
 from .util import get_cur_ip
 
@@ -56,7 +56,7 @@ class Namespace(dict):
 class NamespacedKey:
     """
     Encapsulates a (namespace, path) pair so call sites never hand-roll
-    'ns::path' strings.  Equality and hashing are based on the pair.
+    'ns::path' strings. Equality and hashing are based on the pair.
     """
 
     SEP = "::"
@@ -100,12 +100,8 @@ class DataSource:
     """
 
     def __init__(self):
-        self._nss: dict[str, Namespace] = defaultdict(Namespace)
+        self._nss: Dict[str, Namespace] = defaultdict(Namespace)
         self._nss["global"]["cur_ip"] = get_cur_ip()
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
     def _resolve(self, key) -> Tuple[str, str]:
         """Return (namespace, path) from a NamespacedKey or raw string."""
@@ -113,10 +109,6 @@ class DataSource:
             return key.namespace, key.path
         parsed = NamespacedKey.parse(key)
         return parsed.namespace, parsed.path
-
-    # ------------------------------------------------------------------
-    # Mapping protocol
-    # ------------------------------------------------------------------
 
     def __contains__(self, key) -> bool:
         try:
@@ -151,9 +143,6 @@ class DataSource:
     def copy(self):
         return self.__copy__()
 
-    # ------------------------------------------------------------------
-    # Bulk flatten / unflatten
-    # ------------------------------------------------------------------
 
     def flatten(self, namespace: str, data) -> None:
         """Recursively expand a dict/list into dotted paths under *namespace*."""

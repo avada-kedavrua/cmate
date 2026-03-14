@@ -1,11 +1,11 @@
-import builtins as _builtins
+import os
+import re
 import inspect
 import logging
 import operator
-import os
-import re
+import builtins as _builtins
 from collections import defaultdict
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 
 from . import _ast, custom_fn
 from .data_source import NA, DataSource
@@ -17,6 +17,22 @@ logger = logging.getLogger(__name__)
 
 class CMateError(Exception):
     pass
+
+
+def _iter_nodes(node: _ast.Node):
+    """Yield all AST nodes in *node*'s subtree (depth-first)."""
+    if not isinstance(node, _ast.Node):
+        return
+    yield node
+    if hasattr(node, "__slots__"):
+        for attr in node.__slots__:
+            child = getattr(node, attr, None)
+            if isinstance(child, _ast.Node):
+                yield from _iter_nodes(child)
+            elif isinstance(child, list):
+                for item in child:
+                    if isinstance(item, _ast.Node):
+                        yield from _iter_nodes(item)
 
 
 class NodeVisitor:
@@ -306,6 +322,7 @@ class AssignmentProcessor(_StatementExecutor):
     """
     Walks the [global] section and evaluates assignments into data_source.
     Skips partitions entirely.
+
     """
 
     def __init__(self, input_configs: dict, data_source: DataSource):
@@ -431,11 +448,11 @@ class InfoCollector(NodeVisitor):
     """
 
     def __init__(self):
-        self._metadata_map: dict = {}
-        self._dependency_map: dict = {}
-        self._partition_map: dict = {}
-        self._context_map: dict[str, set] = defaultdict(set)
-        self._namespace: str | None = None
+        self._metadata_map: Dict = {}
+        self._dependency_map: Dict = {}
+        self._partition_map: Dict = {}
+        self._context_map: Dict[str, set] = defaultdict(set)
+        self._namespace: Optional[str] = None
 
     def visit_meta(self, node: _ast.Meta):
         if self._metadata_map:
@@ -455,7 +472,7 @@ class InfoCollector(NodeVisitor):
                     "Dependency %r redefined at line %d, column %d.",
                     name, desc.lineno, desc.col_offset,
                 )
-            self._dependency_map[name] = (desc.desc, desc.parse_type)
+            self._dependency_map[name] = (desc.desc, desc.parse_format)
 
     def visit_global(self, node): pass
 
@@ -475,16 +492,17 @@ class InfoCollector(NodeVisitor):
         if self._namespace != "env" and self._namespace not in self._dependency_map:
             logger.warning("Partition %r not found in dependency map.", self._namespace)
 
-        desc, parse_type = self._dependency_map.get(self._namespace, (None, None))
+        desc, parse_format = self._dependency_map.get(self._namespace, (None, None))
         self._partition_map[self._namespace] = {
             "desc": desc,
-            "parse_type": parse_type,
+            "parse_format": parse_format,
             "required_targets":  sorted(required_targets) or None,
             "required_contexts": sorted(required_contexts) or None,
         }
         self._namespace = None
 
-    def collect(self, node) -> dict:
+    def collect(self, node: _ast.Document) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        """Collect metadata, dependency declarations, and partition requirements."""
         try:
             self.visit(node)
         except Exception as exc:
@@ -723,23 +741,3 @@ class EnvironmentScriptGenerator(NodeVisitor):
         with open(output_path, "w") as f:
             f.write(template.format(set=set_part, undo=undo_part))
         return True
-
-
-# ---------------------------------------------------------------------------
-# Utility: iterate all nodes in a subtree
-# ---------------------------------------------------------------------------
-
-def _iter_nodes(node: _ast.Node):
-    """Yield all AST nodes in *node*'s subtree (depth-first)."""
-    if not isinstance(node, _ast.Node):
-        return
-    yield node
-    if hasattr(node, "__slots__"):
-        for attr in node.__slots__:
-            child = getattr(node, attr, None)
-            if isinstance(child, _ast.Node):
-                yield from _iter_nodes(child)
-            elif isinstance(child, list):
-                for item in child:
-                    if isinstance(item, _ast.Node):
-                        yield from _iter_nodes(item)

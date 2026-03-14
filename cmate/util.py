@@ -14,17 +14,22 @@
 # See the Mulan PSL v2 for more details.
 # -------------------------------------------------------------------------
 
-import concurrent.futures
 import json
-import os
+import signal
 import socket
+import ipaddress
 from enum import Enum
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Callable, Optional
 
-import psutil
 import yaml
+import psutil
 from colorama import Fore, Style
-from msguard.security import open_s
+
+
+class ParseFormatError(ValueError):
+    """Exception raised when a file format is not supported."""
+    pass
 
 
 class Severity(Enum):
@@ -69,55 +74,74 @@ class Severity(Enum):
         }[self]
 
 
-def _ext_to_type(path: str) -> str:
-    _, ext = os.path.splitext(path)
-    return ext.lstrip(".").lower()
+class ParseFormat(Enum):
+    JSON    = ".json"
+    YAML    = ".yaml"
+    YML     = ".yml"
+    UNKNOWN = "unknown"
 
 
-def load(path: str, parse_type: Optional[str] = None) -> Any:
-    """
-    Load a JSON or YAML file.  parse_type defaults to the file extension.
-    Multi-document YAML returns a list; single-document returns the object directly.
-    """
-    if parse_type is None:
-        parse_type = _ext_to_type(path)
+def _parse_format_from_path(path: Path) -> ParseFormat:
+    """Return the parse format from the file path."""
+    try:
+        return ParseFormat(path.suffix)
+    except ValueError:
+        return ParseFormat.UNKNOWN
 
-    if parse_type in ("yaml", "yml"):
-        with open_s(path, "r", encoding="utf-8") as f:
-            docs = list(yaml.safe_load_all(f))
-        if len(docs) == 0:
+
+def load_from_file(path: Path, parse_format: ParseFormat = ParseFormat.UNKNOWN) -> Any:
+    if parse_format == ParseFormat.UNKNOWN:
+        parse_format = _parse_format_from_path(path)
+
+    if not isinstance(path, Path):
+        path = Path(path)
+
+    path = path.resolve()
+    text = path.read_text(encoding="utf-8")
+
+    if parse_format == ParseFormat.YAML or parse_format == ParseFormat.YML:
+        if not text:
             return None
+
+        docs = list(yaml.safe_load_all(text))
         return docs[0] if len(docs) == 1 else docs
 
-    if parse_type == "json":
-        with open_s(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+    if parse_format == ParseFormat.JSON:
+        return json.loads(text)
 
-    raise TypeError(f"Unsupported parse type: {parse_type!r}")
+    raise ParseFormatError(f"Unsupported parse format: {parse_format}")
 
 
-def get_cur_ip() -> str:
-    """Return the first non-loopback, non-docker IPv4 address, or empty string."""
+def get_cur_ip() -> Optional[ipaddress.IPv4Address]:
+    """Return the first non-loopback, non-docker IPv4 address, or None if not found."""
     for interface, addrs in psutil.net_if_addrs().items():
         if any(interface.startswith(p) for p in ("docker", "lo")):
             continue
         for addr in addrs:
             if addr.family == socket.AF_INET and not addr.address.startswith("127"):
-                return addr.address
-    return ""
+                return ipaddress.IPv4Address(addr.address)
+    return None
 
 
-def func_timeout(timeout: int, func, *args, **kwargs):
+def func_timeout(timeout: float, func: Callable, *args, **kwargs):
+    """Execute a function with a timeout.
+    
+    Args:
+        timeout (float): The timeout duration in seconds.
+        func (Callable): The function to execute.
+        *args: The arguments to pass to the function.
+        **kwargs: The keyword arguments to pass to the function.
+    
+    Raises:
+        TimeoutError: If the function takes longer than the timeout.
     """
-    Run *func* with a wall-clock timeout using a thread pool.
-    Works on all platforms and in any thread (unlike SIGALRM).
-    Raises TimeoutError if the function does not complete in time.
-    """
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(func, *args, **kwargs)
-        try:
-            return future.result(timeout=timeout)
-        except concurrent.futures.TimeoutError:
-            raise TimeoutError(
-                f"Function {func.__qualname__!r} timed out after {timeout}s"
-            )
+    def handler(signum, frame):
+        raise TimeoutError(f"Function '{func.__qualname__}' timed out after {timeout} seconds.")
+
+    signal.signal(signal.SIGALRM, handler)
+    signal.alarm(timeout)
+
+    try:
+        return func(*args, **kwargs)
+    finally:
+        signal.alarm(0)

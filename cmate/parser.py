@@ -419,8 +419,8 @@ class Parser:
                   | name ':' STR '@' STR
         """
 
-        parse_type = p[5] if len(p) == 6 else None
-        p[0] = Desc(p[1].lineno, p[1].col_offset, p[1], p[3], parse_type)
+        parse_format = p[5] if len(p) == 6 else None
+        p[0] = Desc(p[1].lineno, p[1].col_offset, p[1], p[3], parse_format)
 
     @staticmethod
     def p_partition(p):
