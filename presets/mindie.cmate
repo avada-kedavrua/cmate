@@ -227,7 +227,7 @@ if ${context::deploy_mode} == 'pd_mix':
         if ${context::npu_type} == 'A2':
             assert path_exists(${RANK_TABLE_FILE}), '需要配置为 rank table 文件路径，在 MindIE 2.0 及以下版本忽略此提示', info
             assert path_exists(${RANKTABLEFILE}), '需要配置为 rank table 文件路径，在 MindIE 2.1 及以上版本忽略此提示', info
-            assert ${MIES_CONTAINER_IP} == ${global::cur_ip}, 'MIES_CONTAINER_IP 表示当前容器 IP 地址，需要设置为当前容器 IP', error
+            assert ${MIES_CONTAINER_IP} == str(${global::cur_ip}), 'MIES_CONTAINER_IP 表示当前容器 IP 地址，需要设置为当前容器 IP', error
             assert ${MASTER_IP} != NA, 'MASTER_IP 注意需要设置为主 server 的 IP 地址', error
             assert ${HCCL_BUFFSIZE} == '64', '用于控制两个 NPU 之间共享数据的缓存区大小，Atlas 800I A2 双机 DeepSeek 场景下建议设置的 HCCL_BUFFSIZE 为 64', info
             assert ${HCCL_CONNECT_TIMEOUT} == '3600', '双机 DeepSeek 场景下，HCCL 建链超时时间建议设置为 3600 秒', info
