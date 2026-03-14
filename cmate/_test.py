@@ -14,7 +14,6 @@
 # See the Mulan PSL v2 for more details.
 # -------------------------------------------------------------------------
 
-import logging
 import shutil
 import sys
 import time
@@ -25,7 +24,7 @@ from colorama import Fore, Style
 
 from . import _ast
 from .util import Severity
-from .visitor import ASTFormatter, _ExpressionEvaluator, _make_partition_resolver
+from .visitor import _ExpressionEvaluator, _make_partition_resolver, ASTFormatter
 
 
 class RuleAssertionError(AssertionError):
@@ -54,18 +53,28 @@ class RuleAssertionError(AssertionError):
 # Custom test result / runner
 # ---------------------------------------------------------------------------
 
+
 class RuleTestResult(unittest.TestResult):
     _COLOR = {
-        ".": Fore.GREEN,  "PASSED":  Fore.GREEN,
-        "F": Fore.RED,    "FAILED":  Fore.RED,
-        "E": Fore.RED,    "ERROR":   Fore.RED,
-        "s": Fore.YELLOW, "SKIPPED": Fore.YELLOW,
+        ".": Fore.GREEN,
+        "PASSED": Fore.GREEN,
+        "F": Fore.RED,
+        "FAILED": Fore.RED,
+        "E": Fore.RED,
+        "ERROR": Fore.RED,
+        "s": Fore.YELLOW,
+        "SKIPPED": Fore.YELLOW,
     }
 
-    def __init__(self, stream=None, descriptions=None, verbosity=False,
-                 total_cnt=None, failfast=False):
-        super().__init__(stream=stream, descriptions=descriptions,
-                         verbosity=verbosity)
+    def __init__(
+        self,
+        stream=None,
+        descriptions=None,
+        verbosity=False,
+        total_cnt=None,
+        failfast=False,
+    ):
+        super().__init__(stream=stream, descriptions=descriptions, verbosity=verbosity)
         if stream is None:
             stream = unittest.runner._WritelnDecorator(sys.stderr)
         self.stream = stream
@@ -89,8 +98,11 @@ class RuleTestResult(unittest.TestResult):
         self._log_messages = []  # Store log messages to display at the end
         self._status_chars: list[str] = []
 
-    def startTestRun(self):  self.stream.writeln()
-    def stopTestRun(self):   self.stream.writeln()
+    def startTestRun(self):
+        self.stream.writeln()
+
+    def stopTestRun(self):
+        self.stream.writeln()
 
     def addError(self, test, err):
         self._tick(test, "ERROR" if self.verbosity else "E")
@@ -138,9 +150,9 @@ class RuleTestResult(unittest.TestResult):
 
         if self.failures:
             self.stream.writeln(" FAILURES ".center(self._cols, "="))
-            for test, err in sorted(self.failures,
-                                     key=lambda x: x[1].rule_node.severity,
-                                     reverse=True):
+            for test, err in sorted(
+                self.failures, key=lambda x: x[1].rule_node.severity, reverse=True
+            ):
                 cc = err.rule_node.severity.color_code
                 self.stream.writeln(
                     f"{cc} {test.id()} ".center(self._cols, "_") + Fore.RESET
@@ -190,7 +202,7 @@ class RuleTestResult(unittest.TestResult):
         if space > 0:
             line = f"{header}{''.join(self._status_chars)}{' ' * space}{colored_pct}"
         else:
-            trimmed = self._status_chars[:max(0, len(self._status_chars) + space)]
+            trimmed = self._status_chars[: max(0, len(self._status_chars) + space)]
             line = f"{header}{''.join(trimmed)} {colored_pct}"
 
         self.stream.write(f"\r{line}")
@@ -212,13 +224,18 @@ class RuleTestResult(unittest.TestResult):
 
         test_id = test.id()
         if len(test_id) > id_w:
-            test_id = (test_id[:id_w - len(ELLIPSIS)] + ELLIPSIS
-                       if id_w > len(ELLIPSIS) else test_id[:id_w])
+            test_id = (
+                test_id[: id_w - len(ELLIPSIS)] + ELLIPSIS
+                if id_w > len(ELLIPSIS)
+                else test_id[:id_w]
+            )
 
         raw = f"{test.namespace}::{test_id} {status}"
         pad = max(0, space - len(raw))
-        line = (f"{test.namespace}::{test_id} "
-                f"{color}{status}{Fore.RESET}{' ' * pad} {colored_pct}")
+        line = (
+            f"{test.namespace}::{test_id} "
+            f"{color}{status}{Fore.RESET}{' ' * pad} {colored_pct}"
+        )
         self.stream.writeln(line)
         self.stream.flush()
 
@@ -234,37 +251,14 @@ class RuleTestRunner:
             self.rescls = rescls
         self.verbosity = verbosity
         self.failfast = failfast
-        self._log_collector = LogCollector()
-        # Backward compatibility
-        self._warning_collector = self._log_collector
-        self._setup_log_collection()
-
-    def _setup_log_collection(self):
-        """Set up the log collector to capture all logging messages."""
-        # Remove any existing handlers to avoid duplicates
-        logger = logging.getLogger()
-        for handler in logger.handlers[:]:
-            if isinstance(handler, LogCollector):
-                logger.removeHandler(handler)
-        logger.addHandler(self._log_collector)
-
-    # Keep _setup_warning_collection for backward compatibility
-    _setup_warning_collection = _setup_log_collection
-
-    def _transfer_logs_to_result(self, result):
-        """Transfer collected log messages to the result for display."""
-        for msg in self._log_collector.get_messages():
-            result.addLogMessage(msg)
-        self._log_collector.clear()
-
-    # Keep _transfer_warnings_to_result for backward compatibility
-    _transfer_warnings_to_result = _transfer_logs_to_result
 
     def run(self, suite):
         total = suite.countTestCases()
         res = self.rescls(
-            stream=self.stream, verbosity=self.verbosity,
-            total_cnt=total, failfast=self.failfast,
+            stream=self.stream,
+            verbosity=self.verbosity,
+            total_cnt=total,
+            failfast=self.failfast,
         )
         cols = shutil.get_terminal_size()[0]
         self.stream.writeln(f"{Style.BRIGHT}collected {total} items{Style.RESET_ALL}")
@@ -286,17 +280,16 @@ class RuleTestRunner:
         finally:
             getattr(res, "stopTestRun", lambda: None)()
         elapsed = time.perf_counter() - t0
-        self._transfer_logs_to_result(res)
 
         res.printErrors()
         res.printLogMessages()
 
         _COUNTERS = [
-            ("errors",              "errors"),
-            ("failures",            "failed"),
-            ("expectedFailures",    "expected failures"),
+            ("errors", "errors"),
+            ("failures", "failed"),
+            ("expectedFailures", "expected failures"),
             ("unexpectedSuccesses", "unexpected successes"),
-            ("skipped",             "skipped"),
+            ("skipped", "skipped"),
         ]
         counts = [
             (getattr(res, attr), label)
@@ -318,6 +311,7 @@ class RuleTestRunner:
 # Test suite factory
 # ---------------------------------------------------------------------------
 
+
 def make_test_suite(data_source, ruleset: dict, output: dict):
     """
     Build a unittest.TestSuite from *ruleset*.
@@ -335,8 +329,9 @@ def make_test_suite(data_source, ruleset: dict, output: dict):
     return suite
 
 
-def _build_test_case(namespace: str, rule_nodes: Set[_ast.Rule],
-                     data_source, output: dict):
+def _build_test_case(
+    namespace: str, rule_nodes: Set[_ast.Rule], data_source, output: dict
+):
     """Dynamically create a TestCase class for one partition namespace."""
 
     resolver = _make_partition_resolver(namespace, data_source, [])
@@ -352,8 +347,9 @@ def _build_test_case(namespace: str, rule_nodes: Set[_ast.Rule],
     return cls
 
 
-def _build_test_method(rule: _ast.Rule, namespace: str,
-                        evaluator: _ExpressionEvaluator, output: dict):
+def _build_test_method(
+    rule: _ast.Rule, namespace: str, evaluator: _ExpressionEvaluator, output: dict
+):
     _SEV = {Severity.INFO: "info", Severity.WARNING: "warning", Severity.ERROR: "error"}
     _RES = {True: "passed", False: "failed"}
     formatter = ASTFormatter()
@@ -363,13 +359,15 @@ def _build_test_method(rule: _ast.Rule, namespace: str,
         result = evaluator.evaluate(rule.test)
         history = evaluator.history
 
-        output.setdefault(namespace, []).append({
-            "test":     test_expr,
-            "msg":      rule.msg,
-            "severity": _SEV[rule.severity],
-            "status":   _RES[result],
-            "metadata": dict(history),
-        })
+        output.setdefault(namespace, []).append(
+            {
+                "test": test_expr,
+                "msg": rule.msg,
+                "severity": _SEV[rule.severity],
+                "status": _RES[result],
+                "metadata": dict(history),
+            }
+        )
 
         if not result:
             raise RuleAssertionError(rule, history)

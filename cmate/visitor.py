@@ -1,14 +1,14 @@
-import os
-import re
+import builtins as _builtins
 import inspect
 import logging
 import operator
-import builtins as _builtins
+import os
+import re
 from collections import defaultdict
-from typing import Optional, Tuple, Dict
+from typing import Any, Dict, Optional, Tuple
 
 from . import _ast, custom_fn
-from .data_source import NA, DataSource
+from .data_source import DataSource, NA
 from .util import func_timeout, Severity
 
 
@@ -72,24 +72,24 @@ class _ExpressionEvaluator(NodeVisitor):
     """
 
     _BINARY_OPS = {
-        "<":    operator.lt,
-        "<=":   operator.le,
-        ">":    operator.gt,
-        ">=":   operator.ge,
-        "==":   operator.eq,
-        "!=":   operator.ne,
-        "=~":   lambda a, b: func_timeout(3, re.search, b, a),
-        "or":   lambda a, b: a or b,
-        "and":  lambda a, b: a and b,
-        "in":       lambda a, b: a in b,
-        "not in":   lambda a, b: a not in b,
-        "+":    operator.add,
-        "-":    operator.sub,
-        "*":    operator.mul,
-        "/":    operator.truediv,
-        "//":   operator.floordiv,
-        "%":    operator.mod,
-        "**":   operator.pow,
+        "<": operator.lt,
+        "<=": operator.le,
+        ">": operator.gt,
+        ">=": operator.ge,
+        "==": operator.eq,
+        "!=": operator.ne,
+        "=~": lambda a, b: func_timeout(3, re.search, b, a),
+        "or": lambda a, b: a or b,
+        "and": lambda a, b: a and b,
+        "in": lambda a, b: a in b,
+        "not in": lambda a, b: a not in b,
+        "+": operator.add,
+        "-": operator.sub,
+        "*": operator.mul,
+        "/": operator.truediv,
+        "//": operator.floordiv,
+        "%": operator.mod,
+        "**": operator.pow,
     }
 
     _UNARY_OPS = {
@@ -98,8 +98,20 @@ class _ExpressionEvaluator(NodeVisitor):
 
     _BUILTIN_FN = {
         name: getattr(_builtins, name)
-        for name in ("int", "float", "bool", "str", "list", "tuple",
-                     "set", "len", "range", "sum", "min", "max")
+        for name in (
+            "int",
+            "float",
+            "bool",
+            "str",
+            "list",
+            "tuple",
+            "set",
+            "len",
+            "range",
+            "sum",
+            "min",
+            "max",
+        )
     }
 
     def __init__(self, data_source: DataSource, resolver=None):
@@ -147,10 +159,12 @@ class _ExpressionEvaluator(NodeVisitor):
         return [self.visit(elt) for elt in node.elts]
 
     def visit_dict(self, node: _ast.Dict):
-        return dict(zip(
-            (self.visit(k) for k in node.keys),
-            (self.visit(v) for v in node.values),
-        ))
+        return dict(
+            zip(
+                (self.visit(k) for k in node.keys),
+                (self.visit(v) for v in node.values),
+            )
+        )
 
     def visit_compare(self, node: _ast.Compare):
         op = self._BINARY_OPS[node.op]
@@ -225,10 +239,10 @@ class _StatementExecutor(NodeVisitor):
         # clean it up in a finally block so global scope is not polluted.
         if isinstance(node.it, _ast.DictPath):
             ref_label = ASTFormatter().format(node.it)
-            temp_key  = None
+            temp_key = None
         else:
             ref_label = f"__loop_{node.lineno}_{node.col_offset}__"
-            temp_key  = f"global::{ref_label}"
+            temp_key = f"global::{ref_label}"
             self._data_source[temp_key] = iterable
 
         saved_in_loop = self._in_loop
@@ -283,8 +297,8 @@ class _StatementExecutor(NodeVisitor):
 # Namespace resolver factory
 # ---------------------------------------------------------------------------
 
-def _make_partition_resolver(namespace: str, data_source: DataSource,
-                              loop_stack: list):
+
+def _make_partition_resolver(namespace: str, data_source: DataSource, loop_stack: list):
     """
     Returns a resolver function for use inside a partition.
 
@@ -318,6 +332,7 @@ def _make_partition_resolver(namespace: str, data_source: DataSource,
 # Concrete visitors
 # ---------------------------------------------------------------------------
 
+
 class AssignmentProcessor(_StatementExecutor):
     """
     Walks the [global] section and evaluates assignments into data_source.
@@ -335,9 +350,14 @@ class AssignmentProcessor(_StatementExecutor):
 
     # -- section gates -------------------------------------------------------
 
-    def visit_meta(self, node):       pass
-    def visit_dependency(self, node): pass
-    def visit_partition(self, node):  pass
+    def visit_meta(self, node):
+        pass
+
+    def visit_dependency(self, node):
+        pass
+
+    def visit_partition(self, node):
+        pass
 
     def visit_global(self, node: _ast.Global):
         self._exec_body(node.body)
@@ -357,7 +377,10 @@ class AssignmentProcessor(_StatementExecutor):
             formatted = self._formatter.format(node.value)
             logger.warning(
                 "Failed to assign %r to %r at line %d, column %d – skipped.",
-                formatted, target, node.lineno, node.col_offset,
+                formatted,
+                target,
+                node.lineno,
+                node.col_offset,
                 exc_info=exc,
             )
             return
@@ -386,7 +409,9 @@ class AssignmentProcessor(_StatementExecutor):
                 logger.warning(
                     "Assignment at line %d, column %d references namespace %r "
                     "which was not provided via -c. Skipped.",
-                    n.lineno, n.col_offset, n.namespace,
+                    n.lineno,
+                    n.col_offset,
+                    n.namespace,
                 )
                 return True
         return False
@@ -402,8 +427,7 @@ class RuleCollector(_StatementExecutor):
     Namespace resolution is done via a closure – the AST is never mutated.
     """
 
-    def __init__(self, input_configs: dict, data_source: DataSource,
-                 severity: str):
+    def __init__(self, input_configs: dict, data_source: DataSource, severity: str):
         super().__init__(data_source)
         self._input_configs = input_configs
         self._min_severity = Severity[severity.upper()]
@@ -418,9 +442,14 @@ class RuleCollector(_StatementExecutor):
 
     # -- section gates -------------------------------------------------------
 
-    def visit_meta(self, node):       pass
-    def visit_dependency(self, node): pass
-    def visit_global(self, node):     pass
+    def visit_meta(self, node):
+        pass
+
+    def visit_dependency(self, node):
+        pass
+
+    def visit_global(self, node):
+        pass
 
     def visit_partition(self, node: _ast.Partition):
         if node.target.id not in self._input_configs:
@@ -456,25 +485,26 @@ class InfoCollector(NodeVisitor):
 
     def visit_meta(self, node: _ast.Meta):
         if self._metadata_map:
-            logger.warning("Multiple [metadata] sections – earlier one overwritten.")
-            self._metadata_map = {}
+            raise CMateError("Multiple [metadata] sections not allowed.")
         for assign in node.body:
             self._metadata_map[assign.target.id] = self._literal_value(assign.value)
 
     def visit_dependency(self, node: _ast.Dependency):
         if self._dependency_map:
-            logger.warning("Multiple [dependency] sections – earlier one overwritten.")
-            self._dependency_map = {}
+            raise CMateError("Multiple [dependency] sections not allowed.")
         for desc in node.body:
             name = desc.target.id
             if name in self._dependency_map:
                 logger.warning(
                     "Dependency %r redefined at line %d, column %d.",
-                    name, desc.lineno, desc.col_offset,
+                    name,
+                    desc.lineno,
+                    desc.col_offset,
                 )
             self._dependency_map[name] = (desc.desc, desc.parse_format)
 
-    def visit_global(self, node): pass
+    def visit_global(self, node):
+        pass
 
     def visit_partition(self, node: _ast.Partition):
         self._namespace = node.target.id
@@ -490,13 +520,15 @@ class InfoCollector(NodeVisitor):
             self._collect_deps(stmt, required_targets, required_contexts)
 
         if self._namespace != "env" and self._namespace not in self._dependency_map:
-            logger.warning("Partition %r not found in dependency map.", self._namespace)
+            raise CMateError(
+                f"Partition {self._namespace!r} must be declared in [dependency] section."
+            )
 
         desc, parse_format = self._dependency_map.get(self._namespace, (None, None))
         self._partition_map[self._namespace] = {
             "desc": desc,
             "parse_format": parse_format,
-            "required_targets":  sorted(required_targets) or None,
+            "required_targets": sorted(required_targets) or None,
             "required_contexts": sorted(required_contexts) or None,
         }
         self._namespace = None
@@ -514,7 +546,7 @@ class InfoCollector(NodeVisitor):
         }
         return {
             "metadata": self._metadata_map,
-            "targets":  self._partition_map,
+            "targets": self._partition_map,
             "contexts": contexts,
         }
 
@@ -529,7 +561,9 @@ class InfoCollector(NodeVisitor):
             if ns not in self._dependency_map:
                 logger.warning(
                     "Undefined namespace %r at line %d, column %d.",
-                    ns, node.lineno, node.col_offset,
+                    ns,
+                    node.lineno,
+                    node.col_offset,
                 )
             if ns == "context":
                 contexts.add(node.path)
@@ -567,16 +601,19 @@ class InfoCollector(NodeVisitor):
         if isinstance(node, _ast.List):
             return [InfoCollector._literal_value(e) for e in node.elts]
         if isinstance(node, _ast.Dict):
-            return dict(zip(
-                (InfoCollector._literal_value(k) for k in node.keys),
-                (InfoCollector._literal_value(v) for v in node.values),
-            ))
+            return dict(
+                zip(
+                    (InfoCollector._literal_value(k) for k in node.keys),
+                    (InfoCollector._literal_value(v) for v in node.values),
+                )
+            )
         raise CMateError(f"Unsupported literal node: {type(node).__name__}")
 
 
 # ---------------------------------------------------------------------------
 # AST pretty-printer
 # ---------------------------------------------------------------------------
+
 
 class ASTFormatter(NodeVisitor):
     """Convert an AST node back to a human-readable string."""
@@ -595,10 +632,12 @@ class ASTFormatter(NodeVisitor):
         return [self.visit(e) for e in node.elts]
 
     def visit_dict(self, node: _ast.Dict):
-        return dict(zip(
-            (self.visit(k) for k in node.keys),
-            (self.visit(v) for v in node.values),
-        ))
+        return dict(
+            zip(
+                (self.visit(k) for k in node.keys),
+                (self.visit(v) for v in node.values),
+            )
+        )
 
     def visit_compare(self, node: _ast.Compare):
         return f"{self.visit(node.left)} {node.op} {self.visit(node.comparator)}"
@@ -624,6 +663,7 @@ class ASTFormatter(NodeVisitor):
 # Environment script generator
 # ---------------------------------------------------------------------------
 
+
 class EnvironmentScriptGenerator(NodeVisitor):
     """
     Inspects the [par env] partition and generates a set_env.sh script.
@@ -639,9 +679,14 @@ class EnvironmentScriptGenerator(NodeVisitor):
         self._undo_cmds: list[str] = []
         self._has_env_partition = False
 
-    def visit_meta(self, node):       pass
-    def visit_dependency(self, node): pass
-    def visit_global(self, node):     pass
+    def visit_meta(self, node):
+        pass
+
+    def visit_dependency(self, node):
+        pass
+
+    def visit_global(self, node):
+        pass
 
     def visit_partition(self, node: _ast.Partition):
         if node.target.id != "env":
@@ -667,10 +712,7 @@ class EnvironmentScriptGenerator(NodeVisitor):
             self.visit(stmt)
 
     def visit_compare(self, node: _ast.Compare):
-        if (
-            not isinstance(node.left, _ast.DictPath)
-            or node.left.namespace == "context"
-        ):
+        if not isinstance(node.left, _ast.DictPath) or node.left.namespace == "context":
             return
 
         env_var = node.left.path
@@ -689,7 +731,8 @@ class EnvironmentScriptGenerator(NodeVisitor):
         if expected is None:
             logger.warning(
                 "Line %d, col %d: use NA (not None) to unset an env var.",
-                node.lineno, node.col_offset,
+                node.lineno,
+                node.col_offset,
             )
             self._set_cmds.append(f"unset {env_var}")
             return
@@ -697,22 +740,24 @@ class EnvironmentScriptGenerator(NodeVisitor):
         if not isinstance(expected, str):
             logger.warning(
                 "Line %d, col %d: non-str value cannot set an env var.",
-                node.lineno, node.col_offset,
+                node.lineno,
+                node.col_offset,
             )
             return
 
         if not self._SAFE_VALUE.fullmatch(expected):
             logger.warning(
                 "Line %d, col %d: value %r fails safety check.",
-                node.lineno, node.col_offset, expected,
+                node.lineno,
+                node.col_offset,
+                expected,
             )
             return
 
         original = self._environ.get(env_var)
         self._set_cmds.append(f'export {env_var}="{expected}"')
         self._undo_cmds.append(
-            f"unset {env_var}" if original is None
-            else f'export {env_var}="{original}"'
+            f"unset {env_var}" if original is None else f'export {env_var}="{original}"'
         )
 
     def generate(self, node, output_path: str = "set_env.sh") -> bool:
@@ -736,7 +781,7 @@ class EnvironmentScriptGenerator(NodeVisitor):
             "    {set}\n"
             "fi\n"
         )
-        set_part  = "\n    ".join(self._set_cmds)  or ":"
+        set_part = "\n    ".join(self._set_cmds) or ":"
         undo_part = "\n    ".join(self._undo_cmds) or ":"
         with open(output_path, "w") as f:
             f.write(template.format(set=set_part, undo=undo_part))

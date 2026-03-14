@@ -14,28 +14,30 @@
 # See the Mulan PSL v2 for more details.
 # -------------------------------------------------------------------------
 
+import ipaddress
 import json
 import signal
 import socket
-import ipaddress
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-import yaml
 import psutil
+
+import yaml
 from colorama import Fore, Style
 
 
 class ParseFormatError(ValueError):
     """Exception raised when a file format is not supported."""
+
     pass
 
 
 class Severity(Enum):
-    INFO    = "[RECOMMEND]"
+    INFO = "[RECOMMEND]"
     WARNING = "[WARNING]"
-    ERROR   = "[NOK]"
+    ERROR = "[NOK]"
 
     def _rank(self) -> int:
         # Canonical ordering: INFO < WARNING < ERROR
@@ -68,16 +70,16 @@ class Severity(Enum):
     @property
     def color_code(self) -> str:
         return {
-            Severity.INFO:    Style.BRIGHT + Fore.CYAN,
+            Severity.INFO: Style.BRIGHT + Fore.CYAN,
             Severity.WARNING: Style.BRIGHT + Fore.YELLOW,
-            Severity.ERROR:   Style.BRIGHT + Fore.RED,
+            Severity.ERROR: Style.BRIGHT + Fore.RED,
         }[self]
 
 
 class ParseFormat(Enum):
-    JSON    = ".json"
-    YAML    = ".yaml"
-    YML     = ".yml"
+    JSON = ".json"
+    YAML = ".yaml"
+    YML = ".yml"
     UNKNOWN = "unknown"
 
 
@@ -125,18 +127,21 @@ def get_cur_ip() -> Optional[ipaddress.IPv4Address]:
 
 def func_timeout(timeout: float, func: Callable, *args, **kwargs):
     """Execute a function with a timeout.
-    
+
     Args:
         timeout (float): The timeout duration in seconds.
         func (Callable): The function to execute.
         *args: The arguments to pass to the function.
         **kwargs: The keyword arguments to pass to the function.
-    
+
     Raises:
         TimeoutError: If the function takes longer than the timeout.
     """
+
     def handler(signum, frame):
-        raise TimeoutError(f"Function '{func.__qualname__}' timed out after {timeout} seconds.")
+        raise TimeoutError(
+            f"Function '{func.__qualname__}' timed out after {timeout} seconds."
+        )
 
     signal.signal(signal.SIGALRM, handler)
     signal.alarm(timeout)

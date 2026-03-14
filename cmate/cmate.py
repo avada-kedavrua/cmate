@@ -14,20 +14,20 @@
 # See the Mulan PSL v2 for more details.
 # -------------------------------------------------------------------------
 
-import os
+import argparse
 import ast
 import json
 import logging
-import argparse
-from pathlib import Path
+import os
 from datetime import datetime
-from typing import List, Optional, Tuple, Dict, Any
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import _ast
-from .util import ParseFormat, ParseFormatError, load_from_file
-from .parser import Parser
-from .data_source import DataSource, NAType
 from ._test import make_test_suite, RuleTestRunner
+from .data_source import DataSource, NAType
+from .parser import Parser
+from .util import load_from_file, ParseFormat, ParseFormatError
 from .visitor import (
     AssignmentProcessor,
     ASTFormatter,
@@ -38,10 +38,10 @@ from .visitor import (
 
 
 LOG_LEVELS = {
-    "debug":    logging.DEBUG,
-    "info":     logging.INFO,
-    "warning":  logging.WARNING,
-    "error":    logging.ERROR,
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "warning": logging.WARNING,
+    "error": logging.ERROR,
     "critical": logging.CRITICAL,
 }
 LOG_FORMAT = "[%(levelname)s] [%(name)s] %(message)s"
@@ -52,6 +52,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Custom exceptions
 # ---------------------------------------------------------------------------
+
 
 class CmateError(Exception):
     """Base class for all cmate errors."""
@@ -69,11 +70,18 @@ class RuleCollectionError(CmateError):
     """Raised when rule collection fails due to unresolved namespace references."""
 
 
+class RuleSyntaxError(CmateError):
+    """Raised when rule file syntax validation fails (e.g., wrong extension)."""
+
+
 # ---------------------------------------------------------------------------
 # CLI argument parsing
 # ---------------------------------------------------------------------------
 
-def _parse_configs(configs: Optional[List[str]]) -> Dict[str, Tuple[Optional[Path], ParseFormat]]:
+
+def _parse_configs(
+    configs: Optional[List[str]],
+) -> Dict[str, Tuple[Optional[Path], ParseFormat]]:
     """
     Parse '-c' arguments of the form '<name>:<path>[@<parse_format>]' or 'env'.
 
@@ -129,9 +137,7 @@ def _parse_contexts(contexts: Optional[List[str]]) -> Dict[str, Any]:
     for entry in contexts:
         parts = entry.split(":", 1)
         if len(parts) != 2:
-            raise ValueError(
-                f"`contexts` expected '<name>:<value>', got: {entry!r}"
-            )
+            raise ValueError(f"`contexts` expected '<name>:<value>', got: {entry!r}")
 
         name, raw = parts
         if name in result:
@@ -149,6 +155,7 @@ def _parse_contexts(contexts: Optional[List[str]]) -> Dict[str, Any]:
 # Dependency validation and data loading
 # ---------------------------------------------------------------------------
 
+
 def _load_dependencies(
     info: Dict[str, Any],
     input_targets: Dict[str, Tuple[Path, ParseFormat]],
@@ -163,9 +170,9 @@ def _load_dependencies(
         ConfigError: If a config file cannot be read or parsed (propagated
                      from _load_targets).
     """
-    all_targets  = info["targets"]
+    all_targets = info["targets"]
     all_contexts = info["contexts"]
-    data_source  = DataSource()
+    data_source = DataSource()
 
     matched = _load_targets(input_targets, all_targets, data_source)
 
@@ -198,8 +205,9 @@ def _load_targets(
     for target, (path, parse_format) in input_targets.items():
         if target not in all_targets:
             logger.warning(
-                "Target %r not defined in the rule file – skipped. "
-                "Known targets: %s", target, list(all_targets.keys())
+                "Target %r not defined in the rule file – skipped. Known targets: %s",
+                target,
+                list(all_targets.keys()),
             )
             continue
 
@@ -231,16 +239,20 @@ def _collect_missing(
     """Return a dict of targets that have unsatisfied dependencies."""
     missing = {}
     for target in matched:
-        info         = all_targets[target]
-        required_targets  = info.get("required_targets")  or []
+        info = all_targets[target]
+        required_targets = info.get("required_targets") or []
         required_contexts = info.get("required_contexts") or []
 
-        absent_targets  = [target for target in required_targets  if target not in input_targets]
-        absent_contexts = [context for context in required_contexts if context not in input_contexts]
+        absent_targets = [
+            target for target in required_targets if target not in input_targets
+        ]
+        absent_contexts = [
+            context for context in required_contexts if context not in input_contexts
+        ]
 
         if absent_targets or absent_contexts:
             missing[target] = {
-                "targets":  absent_targets,
+                "targets": absent_targets,
                 "contexts": absent_contexts,
             }
     return missing
@@ -259,10 +271,10 @@ def _format_missing(
             desc = all_targets.get(t, {}).get("desc") or "No description available."
             parts.append(f"  - {t}: {desc}")
         for c in m["contexts"]:
-            ctx   = all_contexts.get(c, {})
-            raw   = ctx.get("desc")
-            desc  = raw[0] if isinstance(raw, tuple) else "No description."
-            opts  = ctx.get("options", [])
+            ctx = all_contexts.get(c, {})
+            raw = ctx.get("desc")
+            desc = raw[0] if isinstance(raw, tuple) else "No description."
+            opts = ctx.get("options", [])
             parts.append(f"  - {c}: {opts}")
             parts.append(f"      {desc}")
         parts.append("")
@@ -285,7 +297,8 @@ def _load_contexts(
         if ctx not in all_contexts:
             logger.warning(
                 "Context %r not defined in rule file – skipped. Known: %s",
-                ctx, list(all_contexts.keys())
+                ctx,
+                list(all_contexts.keys()),
             )
             continue
         data_source[f"context::{ctx}"] = value
@@ -294,6 +307,7 @@ def _load_contexts(
 # ---------------------------------------------------------------------------
 # Display helpers
 # ---------------------------------------------------------------------------
+
 
 def _display_text(info: Dict[str, Any]) -> None:
     """Display rule file info in human-readable format."""
@@ -312,7 +326,9 @@ def _display_text(info: Dict[str, Any]) -> None:
     _print_section("Context Variables")
     if info["contexts"]:
         for var, ctx in info["contexts"].items():
-            desc = ctx["desc"][0] if isinstance(ctx["desc"], tuple) else "No description."
+            desc = (
+                ctx["desc"][0] if isinstance(ctx["desc"], tuple) else "No description."
+            )
             _print_field(var, ctx["options"])
             print(f"    {desc}\n")
     else:
@@ -323,19 +339,19 @@ def _display_text(info: Dict[str, Any]) -> None:
     if info["targets"]:
         for name, tinfo in info["targets"].items():
             _print_section(name, level=2)
-            desc         = tinfo["desc"] or "No description."
+            desc = tinfo["desc"] or "No description."
             parse_format = tinfo["parse_format"] or "Unknown"
-            req_targets  = tinfo["required_targets"]
+            req_targets = tinfo["required_targets"]
             req_contexts = tinfo["required_contexts"]
 
             if name == "env":
                 _print_field("description", "Environment variable validation", indent=4)
             else:
-                _print_field("type",        parse_format, indent=4)
-                _print_field("description", desc,         indent=4)
+                _print_field("type", parse_format, indent=4)
+                _print_field("description", desc, indent=4)
 
             if req_targets:
-                _print_field("required_targets",  ", ".join(req_targets),  indent=4)
+                _print_field("required_targets", ", ".join(req_targets), indent=4)
             if req_contexts:
                 _print_field("required_contexts", ", ".join(req_contexts), indent=4)
             print()
@@ -371,6 +387,7 @@ class _NAEncoder(json.JSONEncoder):
 # Public API
 # ---------------------------------------------------------------------------
 
+
 def parse(rule_path: Path) -> _ast.Document:
     """Parse a cmate rule file and return the Document AST node."""
     if not isinstance(rule_path, Path):
@@ -382,6 +399,10 @@ def parse(rule_path: Path) -> _ast.Document:
         raise FileNotFoundError(f"Rule file not found: {rule_path}")
     if not rule_path.is_file():
         raise IsADirectoryError(f"Rule path is not a file: {rule_path}")
+    if rule_path.suffix != ".cmate":
+        raise RuleSyntaxError(
+            f"Rule file must have .cmate extension, got: {rule_path.suffix!r}"
+        )
 
     return Parser().parse(rule_path.read_text(encoding="utf-8"))
 
@@ -419,8 +440,7 @@ def run(
         ConfigError: If a config file cannot be loaded.
         RuleCollectionError: If rule collection fails due to missing namespace.
     """
-    breakpoint()
-    parsed_configs  = _parse_configs(configs)
+    parsed_configs = _parse_configs(configs)
     parsed_contexts = _parse_contexts(contexts)
 
     node = parse(rule_path)
@@ -464,9 +484,9 @@ def _execute(
     verbosity: bool,
     output_path: Optional[Path],
 ) -> int:
-    runner     = RuleTestRunner(failfast=failfast, verbosity=verbosity)
+    runner = RuleTestRunner(failfast=failfast, verbosity=verbosity)
     result_log: dict = {}
-    suite  = make_test_suite(data_source, ruleset, result_log)
+    suite = make_test_suite(data_source, ruleset, result_log)
     result = runner.run(suite)
 
     if output_path:
@@ -474,7 +494,9 @@ def _execute(
         output_path.mkdir(mode=0o750, parents=True, exist_ok=True)
 
         out_file = output_path / f"cmate_{ts}_output.json"
-        out_file.write_text(json.dumps(result_log, cls=_NAEncoder, ensure_ascii=False, indent=4))
+        out_file.write_text(
+            json.dumps(result_log, cls=_NAEncoder, ensure_ascii=False, indent=4)
+        )
 
     return 0 if result.wasSuccessful() else 1
 
@@ -482,6 +504,7 @@ def _execute(
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
+
 
 def main(args: Optional[List[str]] = None) -> int:
     """Main entry point for the cmate command-line tool."""
@@ -491,35 +514,72 @@ def main(args: Optional[List[str]] = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     global_parser = argparse.ArgumentParser(add_help=False)
-    global_parser.add_argument("-l", "--log-level", choices=LOG_LEVELS, default="info",
-                               help="Logging verbosity")
+    global_parser.add_argument(
+        "-l",
+        "--log-level",
+        choices=LOG_LEVELS,
+        default="info",
+        help="Logging verbosity",
+    )
     global_parser.add_argument("rule", type=Path, help="Path to the cmate rule file")
 
     subparsers = parser.add_subparsers(dest="command", required=False)
 
     # -- run -----------------------------------------------------------------
-    run_parser = subparsers.add_parser("run", parents=[global_parser],
-                                       help="Validate configurations against rules")
-    run_parser.add_argument("--configs", "-c", nargs="*",
-                            help="Config files: '<name>:<path>[@<type>]' or 'env'")
-    run_parser.add_argument("--contexts", "-C", nargs="*",
-                            help="Context variables: '<name>:<value>'")
-    run_parser.add_argument("-co", "--collect-only", action="store_true",
-                            help="List rules without executing them")
-    run_parser.add_argument("--output-path", type=Path,
-                            help="Directory for the JSON result file")
-    run_parser.add_argument("-x", "--fail-fast", action="store_true", dest="failfast",
-                            help="Stop on first failure")
-    run_parser.add_argument("-v", "--verbose", action="store_true", dest="verbose",
-                            help="Verbose test output")
-    run_parser.add_argument("-s", "--severity", choices=["info", "warning", "error"],
-                            default="info", help="Minimum severity to execute (default: info)")
+    run_parser = subparsers.add_parser(
+        "run", parents=[global_parser], help="Validate configurations against rules"
+    )
+    run_parser.add_argument(
+        "--configs",
+        "-c",
+        nargs="*",
+        help="Config files: '<name>:<path>[@<type>]' or 'env'",
+    )
+    run_parser.add_argument(
+        "--contexts", "-C", nargs="*", help="Context variables: '<name>:<value>'"
+    )
+    run_parser.add_argument(
+        "-co",
+        "--collect-only",
+        action="store_true",
+        help="List rules without executing them",
+    )
+    run_parser.add_argument(
+        "--output-path", type=Path, help="Directory for the JSON result file"
+    )
+    run_parser.add_argument(
+        "-x",
+        "--fail-fast",
+        action="store_true",
+        dest="failfast",
+        help="Stop on first failure",
+    )
+    run_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        dest="verbose",
+        help="Verbose test output",
+    )
+    run_parser.add_argument(
+        "-s",
+        "--severity",
+        choices=["info", "warning", "error"],
+        default="info",
+        help="Minimum severity to execute (default: info)",
+    )
 
     # -- inspect -------------------------------------------------------------
-    inspect_parser = subparsers.add_parser("inspect", parents=[global_parser],
-                                           help="Show rule file requirements")
-    inspect_parser.add_argument("--format", "-f", choices=["text", "json"], default="text",
-                                help="Output format (default: text)")
+    inspect_parser = subparsers.add_parser(
+        "inspect", parents=[global_parser], help="Show rule file requirements"
+    )
+    inspect_parser.add_argument(
+        "--format",
+        "-f",
+        choices=["text", "json"],
+        default="text",
+        help="Output format (default: text)",
+    )
 
     parsed = parser.parse_args(args)
     if not parsed.command:

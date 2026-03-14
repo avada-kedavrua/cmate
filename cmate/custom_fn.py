@@ -33,7 +33,11 @@ def path_exists(path: str) -> bool:
     Returns:
         bool: True if the path exists, False otherwise.
     """
-    return os.path.exists(path)
+    
+    try:
+        return os.path.exists(path)
+    except TypeError:
+        return False
 
 
 def is_port_in_use(port: int, host: str = "localhost", protocol: str = "tcp") -> bool:

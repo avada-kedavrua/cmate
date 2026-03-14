@@ -44,6 +44,7 @@ class Expr(Node):
 
 # --- Mod subclasses ---
 
+
 class Document(Mod):
     pass
 
@@ -70,6 +71,7 @@ class Partition(Mod):
 
 
 # --- Stmt subclasses ---
+
 
 class Assign(Stmt):
     __slots__ = ("target", "value")
@@ -130,6 +132,7 @@ class Continue(Stmt):
 
 
 # --- Expr subclasses ---
+
 
 class UnaryOp(Expr):
     __slots__ = ("op", "operand")

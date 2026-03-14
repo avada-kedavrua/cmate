@@ -30,17 +30,35 @@ class NAType:
             cls.__instance = super().__new__(cls)
         return cls.__instance
 
-    def __repr__(self): return "NA"
-    def __str__(self):  return "NA"
-    def __bool__(self): return False
-    def __hash__(self): return hash("NA")
+    def __repr__(self):
+        return "NA"
 
-    def __eq__(self, other):  return isinstance(other, NAType)
-    def __ne__(self, other):  return not isinstance(other, NAType)
-    def __lt__(self, other):  return False
-    def __le__(self, other):  return False
-    def __gt__(self, other):  return False
-    def __ge__(self, other):  return False
+    def __str__(self):
+        return "NA"
+
+    def __bool__(self):
+        return False
+
+    def __hash__(self):
+        return hash("NA")
+
+    def __eq__(self, other):
+        return isinstance(other, NAType)
+
+    def __ne__(self, other):
+        return not isinstance(other, NAType)
+
+    def __lt__(self, other):
+        return False
+
+    def __le__(self, other):
+        return False
+
+    def __gt__(self, other):
+        return False
+
+    def __ge__(self, other):
+        return False
 
 
 NA = NAType()
@@ -142,7 +160,6 @@ class DataSource:
 
     def copy(self):
         return self.__copy__()
-
 
     def flatten(self, namespace: str, data) -> None:
         """Recursively expand a dict/list into dotted paths under *namespace*."""
