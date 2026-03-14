@@ -24,6 +24,7 @@ from ._ast import (
     Call,
     Compare,
     Constant,
+    Context,
     Continue,
     Dependency,
     Desc,
@@ -38,6 +39,7 @@ from ._ast import (
     Name,
     Partition,
     Rule,
+    Target,
     UnaryOp,
 )
 from .lexer import Lexer
@@ -120,6 +122,8 @@ class Parser:
         body : meta
              | global
              | dependency
+             | targets
+             | contexts
              | partition
         """
         p[0] = p[1]
@@ -403,6 +407,16 @@ class Parser:
     def p_dependency(p):
         "dependency : '[' DEPENDENCY ']' desc_stmts END"
         p[0] = Dependency(p[4])
+
+    @staticmethod
+    def p_targets(p):
+        "targets : '[' TARGETS ']' desc_stmts END"
+        p[0] = Target(p[4])
+
+    @staticmethod
+    def p_contexts(p):
+        "contexts : '[' CONTEXTS ']' desc_stmts END"
+        p[0] = Context(p[4])
 
     @staticmethod
     def p_desc_stmts(p):

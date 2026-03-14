@@ -61,6 +61,18 @@ class Dependency(Mod):
     pass
 
 
+class Target(Mod):
+    """Section for defining validation targets (config files)."""
+
+    pass
+
+
+class Context(Mod):
+    """Section for defining context variables."""
+
+    pass
+
+
 class Partition(Mod):
     # Only declare fields not already in Mod.__slots__
     __slots__ = ("target",)

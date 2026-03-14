@@ -64,7 +64,7 @@ class RuleAssertionError(AssertionError):
         lines = [
             "",
             f"  {Style.DIM}Expected:{Style.RESET_ALL} "
-            f"{formatter.visit(self.rule_node.test)}",
+            f"{Fore.CYAN}{formatter.visit(self.rule_node.test)}{Fore.RESET}",
             "",
         ]
 
@@ -72,9 +72,12 @@ class RuleAssertionError(AssertionError):
             lines.append(f"  {Style.DIM}Got:{Style.RESET_ALL}")
             for k, v in self.history:
                 if isinstance(v, tuple):
-                    lines.append(f"    {k} = {v[0]!r} ({Style.DIM}from{Style.RESET_ALL} {v[1]})")
+                    lines.append(
+                        f"    {k} = {Fore.YELLOW}{v[0]!r}{Fore.RESET} "
+                        f"({Style.DIM}from{Style.RESET_ALL} {v[1]})"
+                    )
                 else:
-                    lines.append(f"    {k} = {v!r}")
+                    lines.append(f"    {k} = {Fore.YELLOW}{v!r}{Fore.RESET}")
             lines.append("")
 
         lines.append(f"  {sev_color}[{sev_name}]{Fore.RESET} {self.rule_node.msg}")
@@ -128,6 +131,7 @@ class RuleTestResult(unittest.TestResult):
             "WARNING": Fore.YELLOW,
         }
         self._status_chars: list[str] = []
+        self._current_namespace = None
 
     def startTestRun(self):
         self.stream.writeln()
@@ -170,8 +174,10 @@ class RuleTestResult(unittest.TestResult):
                 test_header = (
                     f" [{test.namespace}] test_{test._testMethodName.split('_')[-1]} "
                 )
-                divider = _center_with_ansi(
-                    f"{Fore.RED}{test_header}{Fore.RESET}", self._cols, "_"
+                divider = (
+                    f"{Fore.RED}"
+                    + _center_with_ansi(test_header, self._cols, "_")
+                    + f"{Fore.RESET}"
                 )
                 self.stream.writeln(divider)
                 self.stream.writeln()
@@ -188,8 +194,10 @@ class RuleTestResult(unittest.TestResult):
                 # Extract test number from test method name
                 test_num = test._testMethodName.split("_")[-1]
                 test_header = f" [{test.namespace}] test_{test_num} "
-                divider = _center_with_ansi(
-                    f"{sev_color}{test_header}{Fore.RESET}", self._cols, "_"
+                divider = (
+                    f"{sev_color}"
+                    + _center_with_ansi(test_header, self._cols, "_")
+                    + f"{Fore.RESET}"
                 )
                 self.stream.writeln(divider)
                 self.stream.writeln(err.build_err_msg())
@@ -203,6 +211,15 @@ class RuleTestResult(unittest.TestResult):
             self._tick_compact(test, label)
 
     def _tick_compact(self, test, ch: str):
+        # Detect namespace change and preserve previous partition line
+        if (
+            self._current_namespace is not None
+            and self._current_namespace != test.namespace
+        ):
+            self.stream.writeln()  # Preserve previous line
+            self._status_chars = []  # Reset for new partition
+        self._current_namespace = test.namespace
+
         PERCENT_PAD = 1
         color = self._COLOR.get(ch, Fore.RESET)
         self._status_chars.append(f"{color}{ch}{Fore.RESET}")

@@ -303,10 +303,12 @@ def _make_partition_resolver(namespace: str, data_source: DataSource, loop_stack
 
     Resolution order for an unqualified path:
       1. If the path is the current loop variable, rewrite to the indexed ref.
-      2. If 'namespace::path' exists in data_source, use that namespace.
-      3. Otherwise fall back to 'global'.
+      2. If 'global::path' exists in data_source (explicitly assigned in global),
+         use global.
+      3. Otherwise use the partition namespace (e.g., env::, mies_config::).
 
-    This replaces the old approach of mutating DictPath.namespace in-place.
+    This ensures variables like env::NPU_MEMORY_FRACTION display correctly
+    instead of falling back to global:: when not found.
     """
 
     def resolver(ns: Optional[str], path: str) -> str:
@@ -318,11 +320,13 @@ def _make_partition_resolver(namespace: str, data_source: DataSource, loop_stack
             if path == loop_var:
                 return f"global::{ref_label}"
 
-        local_key = f"{namespace}::{path}"
-        if local_key in data_source:
-            return local_key
+        # Check if explicitly defined in global (assigned in [global] section)
+        global_key = f"global::{path}"
+        if global_key in data_source:
+            return global_key
 
-        return f"global::{path}"
+        # Otherwise use the partition namespace
+        return f"{namespace}::{path}"
 
     return resolver
 
@@ -476,15 +480,21 @@ class RuleCollector(_StatementExecutor):
 
 class InfoCollector(NodeVisitor):
     """
-    Collects metadata, dependency declarations, and partition requirements
-    without executing any expressions.
+    Collects metadata, target/dependency declarations, context definitions,
+    and partition requirements without executing any expressions.
+
+    Supports both:
+    - New syntax: [target] for config files, [context] for context variables
+    - Legacy syntax: [dependency] for both (backward compatibility)
     """
 
     def __init__(self):
         self._metadata_map: Dict = {}
-        self._dependency_map: Dict = {}
+        self._dependency_map: Dict = {}  # Legacy [dependency] section
+        self._target_map: Dict = {}  # New [target] section
+        self._context_def_map: Dict = {}  # New [context] section definitions
         self._partition_map: Dict = {}
-        self._context_map: Dict[str, set] = defaultdict(set)
+        self._context_map: Dict[str, set] = defaultdict(set)  # Inferred options
         self._namespace: Optional[str] = None
 
     def visit_meta(self, node: _ast.Meta):
@@ -494,6 +504,7 @@ class InfoCollector(NodeVisitor):
             self._metadata_map[assign.target.id] = self._literal_value(assign.value)
 
     def visit_dependency(self, node: _ast.Dependency):
+        """Handle legacy [dependency] section (backward compatibility)."""
         if self._dependency_map:
             raise CMateError("Multiple [dependency] sections not allowed.")
         for desc in node.body:
@@ -506,6 +517,43 @@ class InfoCollector(NodeVisitor):
                     desc.col_offset,
                 )
             self._dependency_map[name] = (desc.desc, desc.parse_format)
+
+    def visit_target(self, node: _ast.Target):
+        """Handle new [targets] section for config file definitions."""
+        if self._target_map:
+            raise CMateError("Multiple [targets] sections not allowed.")
+        for desc in node.body:
+            name = desc.target.id
+            if name == "env":
+                raise CMateError(
+                    f"'env' cannot be declared in [targets] section "
+                    f"(line {desc.lineno}, column {desc.col_offset}). "
+                    "The 'env' partition is built-in for environment variables."
+                )
+            if name in self._target_map:
+                logger.warning(
+                    "Target %r redefined at line %d, column %d.",
+                    name,
+                    desc.lineno,
+                    desc.col_offset,
+                )
+            self._target_map[name] = (desc.desc, desc.parse_format)
+
+    def visit_context(self, node: _ast.Context):
+        """Handle new [contexts] section for context variable definitions."""
+        if self._context_def_map:
+            raise CMateError("Multiple [contexts] sections not allowed.")
+        for desc in node.body:
+            name = desc.target.id
+            if name in self._context_def_map:
+                logger.warning(
+                    "Context %r redefined at line %d, column %d.",
+                    name,
+                    desc.lineno,
+                    desc.col_offset,
+                )
+            # Context definitions don't have parse_format, just description
+            self._context_def_map[name] = desc.desc
 
     def visit_global(self, node):
         pass
@@ -523,12 +571,30 @@ class InfoCollector(NodeVisitor):
         for stmt in node.body:
             self._collect_deps(stmt, required_targets, required_contexts)
 
-        if self._namespace != 'env' and self._namespace not in self._dependency_map:
-            raise CMateError(
-                f"Partition {self._namespace!r} must be declared in [dependency] section."
-            )
+        # Validate partition is declared in [targets], [dependency], or is 'env'
+        if self._namespace != "env":
+            # Check new [targets] section first, then legacy [dependency]
+            if self._target_map:
+                if self._namespace not in self._target_map:
+                    raise CMateError(
+                        f"Partition {self._namespace!r} must be declared in [targets] section."
+                    )
+            elif self._dependency_map:
+                if self._namespace not in self._dependency_map:
+                    raise CMateError(
+                        f"Partition {self._namespace!r} must be declared in [dependency] section."
+                    )
+            else:
+                raise CMateError(
+                    f"Partition {self._namespace!r} requires a [targets] or [dependency] section."
+                )
 
-        desc, parse_format = self._dependency_map.get(self._namespace, (None, None))
+        # Get description and parse format from [target] or [dependency]
+        if self._target_map and self._namespace in self._target_map:
+            desc, parse_format = self._target_map[self._namespace]
+        else:
+            desc, parse_format = self._dependency_map.get(self._namespace, (None, None))
+
         self._partition_map[self._namespace] = {
             "desc": desc,
             "parse_format": parse_format,
@@ -538,16 +604,35 @@ class InfoCollector(NodeVisitor):
         self._namespace = None
 
     def collect(self, node: _ast.Document) -> Dict[str, Dict[str, Dict[str, Any]]]:
-        """Collect metadata, dependency declarations, and partition requirements."""
+        """Collect metadata, target/dependency declarations, and partition requirements."""
         try:
             self.visit(node)
         except Exception as exc:
             raise CMateError(f"Configuration parsing failed: {exc}") from exc
 
-        contexts = {
-            var: {"desc": self._dependency_map.get(var), "options": sorted(opts)}
-            for var, opts in self._context_map.items()
-        }
+        # Validate that all context:: references are defined in [contexts] section
+        # (only if [contexts] section exists)
+        if self._context_def_map:
+            for var in self._context_map.keys():
+                if var not in self._context_def_map:
+                    raise CMateError(
+                        f"Context variable {var!r} is used in rules but not declared "
+                        "in [contexts] section."
+                    )
+
+        # Build contexts from either [context] section or [dependency] (legacy)
+        contexts = {}
+        for var, opts in self._context_map.items():
+            if self._context_def_map:
+                # New syntax: get description from [context] section
+                desc = self._context_def_map.get(var)
+            else:
+                # Legacy syntax: get description from [dependency] section
+                desc = self._dependency_map.get(var)
+                if isinstance(desc, tuple):
+                    desc = desc[0]  # (desc, parse_format) -> desc
+            contexts[var] = {"desc": desc, "options": sorted(opts)}
+
         return {
             "metadata": self._metadata_map,
             "targets": self._partition_map,
@@ -562,7 +647,15 @@ class InfoCollector(NodeVisitor):
             ns = node.namespace
             if ns is None or ns in {"global", "env"}:
                 return
-            if ns not in self._dependency_map:
+            # Determine the valid namespaces based on which section is used
+            valid_namespaces = set()
+            if self._target_map:
+                valid_namespaces.update(self._target_map.keys())
+            if self._dependency_map:
+                valid_namespaces.update(self._dependency_map.keys())
+            valid_namespaces.add("context")
+
+            if ns not in valid_namespaces:
                 logger.warning(
                     "Undefined namespace %r at line %d, column %d.",
                     ns,

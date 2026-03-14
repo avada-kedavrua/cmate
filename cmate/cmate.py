@@ -267,7 +267,11 @@ def _format_missing(
         for c in m["contexts"]:
             ctx = all_contexts.get(c, {})
             raw = ctx.get("desc")
-            desc = raw[0] if isinstance(raw, tuple) else "No description."
+            # Handle both new format (string) and legacy format (tuple)
+            if isinstance(raw, tuple):
+                desc = raw[0]
+            else:
+                desc = raw or "No description."
             opts = ctx.get("options", [])
             parts.append(f"  - {c}: {opts}")
             parts.append(f"      {desc}")
@@ -320,9 +324,12 @@ def _display_text(info: Dict[str, Any]) -> None:
     _print_section("Context Variables")
     if info["contexts"]:
         for var, ctx in info["contexts"].items():
-            desc = (
-                ctx["desc"][0] if isinstance(ctx["desc"], tuple) else "No description."
-            )
+            desc = ctx["desc"]
+            # Handle both new format (string) and legacy format (tuple)
+            if isinstance(desc, tuple):
+                desc = desc[0]
+            if not desc:
+                desc = "No description."
             _print_field(var, ctx["options"])
             print(f"    {desc}\n")
     else:
