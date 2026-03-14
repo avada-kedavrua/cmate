@@ -20,8 +20,9 @@ import json
 import logging
 import os
 from datetime import datetime
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 
+from . import _ast as ast
 from ._test import make_test_suite, RuleTestRunner
 from .data_source import DataSource, NAType
 from .parser import Parser
@@ -43,17 +44,19 @@ LOG_LEVELS = {
 }
 LOG_FORMAT = "[%(levelname)s] [%(name)s] %(message)s"
 
+
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# CLI argument parsers
-# ---------------------------------------------------------------------------
 
 def _parse_configs(configs: Optional[List[str]]) -> Tuple[bool, Dict[str, Tuple[str, str]]]:
     """
     Parse '-c' arguments of the form '<name>:<path>[@<parse_type>]' or 'env'.
-    Returns (ok, {name: (path, parse_type)}).
+
+    Args:
+        configs (Optional[List[str]]): List of configs of the form '<name>:<path>[@<parse_type>]' or 'env'.
+
+    Returns:
+        Tuple[bool, Dict[str, Tuple[str, str]]]: Whether parsing was successful and the parsed configs.
     """
     if not configs:
         return True, {}
@@ -323,7 +326,7 @@ class _NAEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
-def parse(rule_path: str) -> Document:
+def parse(rule_path: str) -> ast.Document:
     """Parse a cmate rule file and return the Document AST node."""
     parser = Parser()
     with open(rule_path) as f:
@@ -342,8 +345,8 @@ def inspect(rule_path: str, output_format: str = "text") -> None:
 
 def run(
     rule_path: str,
-    configs: Optional[Dict[str, Tuple[str, str]]] = None,
-    contexts: Optional[Dict[str, str]] = None,
+    configs: Optional[List[str]] = None,
+    contexts: Optional[List[str]] = None,
     failfast: bool = False,
     verbosity: bool = False,
     collect_only: bool = False,
@@ -354,6 +357,14 @@ def run(
     Main entry point for rule evaluation.
     Returns 0 on success, 1 on failure.
     """
+    ok, configs = _parse_configs(configs)
+    if not ok:
+        return 1
+
+    ok, contexts = _parse_contexts(contexts)
+    if not ok:
+        return 1
+
     node = parse(rule_path)
     info = InfoCollector().collect(node)
 
@@ -381,7 +392,7 @@ def run(
     return _execute(ruleset, data_source, failfast, verbosity, output_path)
 
 
-def _show_collected(ruleset: Dict[str, List[Rule]]) -> int:
+def _show_collected(ruleset: Dict[str, List[ast.Rule]]) -> int:
     """Display the collected rules in a human-readable format."""
     formatter = ASTFormatter()
     lines = []
@@ -393,7 +404,7 @@ def _show_collected(ruleset: Dict[str, List[Rule]]) -> int:
     return 0
 
 
-def _execute(ruleset: Dict[str, List[Rule]], data_source: DataSource,
+def _execute(ruleset: Dict[str, List[ast.Rule]], data_source: DataSource,
              failfast: bool, verbosity: bool, output_path: str) -> int:
     """Execute the collected rules and return the result."""
     runner = RuleTestRunner(failfast=failfast, verbosity=verbosity)
@@ -460,19 +471,10 @@ def main() -> int:
             return 1
         return 0
 
-    # run
-    ok, configs = _parse_configs(args.configs)
-    if not ok:
-        return 1
-
-    ok, contexts = _parse_contexts(args.contexts)
-    if not ok:
-        return 1
-
     return run(
         args.rule,
-        configs,
-        contexts,
+        args.configs,
+        args.contexts,
         args.failfast,
         args.verbose,
         args.collect_only,
