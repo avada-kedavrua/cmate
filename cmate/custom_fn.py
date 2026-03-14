@@ -19,21 +19,21 @@
 # ***************************************************************************************** #
 
 import os
-import socket
 import shutil
+import socket
 import subprocess
 
 
 def path_exists(path: str) -> bool:
     """Check if a path exists.
-    
+
     Args:
         path (str): Path to check.
-    
+
     Returns:
         bool: True if the path exists, False otherwise.
     """
-    
+
     try:
         return os.path.exists(path)
     except TypeError:
@@ -42,12 +42,12 @@ def path_exists(path: str) -> bool:
 
 def is_port_in_use(port: int, host: str = "localhost", protocol: str = "tcp") -> bool:
     """Check if a port is in use.
-    
+
     Args:
         port (int): Port number.
         host (str, optional): Host address. Defaults to "localhost".
         protocol (str, optional): Protocol. Defaults to "tcp".
-    
+
     Returns:
         bool: True if the port is in use, False otherwise.
     """
@@ -73,10 +73,10 @@ def is_port_in_use(port: int, host: str = "localhost", protocol: str = "tcp") ->
 
 def images_exists(image_name: str) -> bool:
     """Check if the image exists in the local docker
-    
+
     Args:
         image_name (str): Image name.
-    
+
     Returns:
         bool: True if the image exists, False otherwise.
     """
@@ -92,7 +92,7 @@ def images_exists(image_name: str) -> bool:
 
 def get_k8s_namespaces() -> list:
     """Get the list of all namespaces in the current Kubernetes cluster.
-    
+
     Returns:
         list: List of namespace names.
     """
@@ -101,11 +101,17 @@ def get_k8s_namespaces() -> list:
     if not kubectl_pth:
         return []
 
-    cmd = [kubectl_pth, "get", "namespaces", "-o", "jsonpath='{.items[*].metadata.name}'"]
-    
+    cmd = [
+        kubectl_pth,
+        "get",
+        "namespaces",
+        "-o",
+        "jsonpath='{.items[*].metadata.name}'",
+    ]
+
     try:
         res = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True)
     except subprocess.CalledProcessError:
         return []
-    
+
     return res.strip("'").split()

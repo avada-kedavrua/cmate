@@ -28,13 +28,7 @@ from ._test import make_test_suite, RuleTestRunner
 from .data_source import DataSource, NAType
 from .parser import Parser
 from .util import load_from_file, ParseFormat, ParseFormatError
-from .visitor import (
-    AssignmentProcessor,
-    ASTFormatter,
-    EnvironmentScriptGenerator,
-    InfoCollector,
-    RuleCollector,
-)
+from .visitor import AssignmentProcessor, ASTFormatter, InfoCollector, RuleCollector
 
 
 LOG_LEVELS = {
@@ -457,8 +451,6 @@ def run(
             f"Rule collection failed – namespace {e} is referenced but not listed "
             "in dependencies or the partition section."
         ) from e
-
-    EnvironmentScriptGenerator(data_source).generate(node)
 
     if collect_only:
         return _show_collected(ruleset)

@@ -14,6 +14,7 @@
 # See the Mulan PSL v2 for more details.
 # -------------------------------------------------------------------------
 
+import re
 import shutil
 import sys
 import time
@@ -27,6 +28,26 @@ from .util import Severity
 from .visitor import _ExpressionEvaluator, _make_partition_resolver, ASTFormatter
 
 
+# ANSI escape code pattern for calculating visible text length
+_ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _visible_len(text: str) -> int:
+    """Calculate the visible length of text, excluding ANSI escape codes."""
+    return len(_ANSI_ESCAPE_PATTERN.sub("", text))
+
+
+def _center_with_ansi(text: str, width: int, fillchar: str = " ") -> str:
+    """Center text with ANSI codes, using visible length for calculation."""
+    visible = _visible_len(text)
+    if visible >= width:
+        return text
+    padding = width - visible
+    left_pad = padding // 2
+    right_pad = padding - left_pad
+    return fillchar * left_pad + text + fillchar * right_pad
+
+
 class RuleAssertionError(AssertionError):
     """Carries the failed Rule node and the evaluator's variable history."""
 
@@ -36,16 +57,27 @@ class RuleAssertionError(AssertionError):
         self.history = history
 
     def build_err_msg(self) -> str:
-        indent = len(self.rule_node.severity.value) + 2
         formatter = ASTFormatter()
+        sev_color = self.rule_node.severity.color_code
+        sev_name = self.rule_node.severity.name
+
         lines = [
-            ">".ljust(indent) + formatter.visit(self.rule_node.test),
+            "",
+            f"  {Style.DIM}Expected:{Style.RESET_ALL} "
+            f"{formatter.visit(self.rule_node.test)}",
             "",
         ]
-        for k, v in self.history:
-            line = f"{k} -> {v[1]} -> {v[0]}" if isinstance(v, tuple) else f"{k} -> {v}"
-            lines.append("E".ljust(indent) + line)
-        lines += ["", f"{self.rule_node.severity} {self.rule_node.msg}"]
+
+        if self.history:
+            lines.append(f"  {Style.DIM}Got:{Style.RESET_ALL}")
+            for k, v in self.history:
+                if isinstance(v, tuple):
+                    lines.append(f"    {k} = {v[0]!r} (from {v[1]})")
+                else:
+                    lines.append(f"    {k} = {v!r}")
+            lines.append("")
+
+        lines.append(f"  {sev_color}[{sev_name}]{Fore.RESET} {self.rule_node.msg}")
         return "\n".join(lines)
 
 
@@ -95,7 +127,6 @@ class RuleTestResult(unittest.TestResult):
             "W": Fore.YELLOW,
             "WARNING": Fore.YELLOW,
         }
-        self._log_messages = []  # Store log messages to display at the end
         self._status_chars: list[str] = []
 
     def startTestRun(self):
@@ -130,53 +161,40 @@ class RuleTestResult(unittest.TestResult):
         self._tick(test, "UNEXPECTEDPASSED" if self.verbosity else "U")
         return super().addUnexpectedSuccess(test)
 
-    def addLogMessage(self, message):
-        """Add a log message to be displayed at the end."""
-        self._log_messages.append(message)
-
-    def addWarning(self, message):
-        """Add a warning message to be displayed at the end (backward compatibility)."""
-        self._log_messages.append(message)
-
     def printErrors(self):
         if self.errors:
-            self.stream.writeln(" ERRORS ".center(self._cols, "="))
+            header = f"{Fore.RED}{' ERRORS '.center(self._cols, '=')}{Fore.RESET}"
+            self.stream.writeln(header)
             for test, exc in self.errors:
-                self.stream.writeln(
-                    f"{Fore.RED} {test.id()} ".center(self._cols, "_") + Fore.RESET
+                # Build header with consistent coloring
+                test_header = (
+                    f" [{test.namespace}] test_{test._testMethodName.split('_')[-1]} "
                 )
+                divider = _center_with_ansi(
+                    f"{Fore.RED}{test_header}{Fore.RESET}", self._cols, "_"
+                )
+                self.stream.writeln(divider)
                 self.stream.writeln()
                 self.stream.write(str(exc))
+            self.stream.writeln()
 
         if self.failures:
-            self.stream.writeln(" FAILURES ".center(self._cols, "="))
+            header = f"{Fore.RED}{' FAILURES '.center(self._cols, '=')}{Fore.RESET}"
+            self.stream.writeln(header)
             for test, err in sorted(
                 self.failures, key=lambda x: x[1].rule_node.severity, reverse=True
             ):
-                cc = err.rule_node.severity.color_code
-                self.stream.writeln(
-                    f"{cc} {test.id()} ".center(self._cols, "_") + Fore.RESET
+                sev_color = err.rule_node.severity.color_code
+                # Extract test number from test method name
+                test_num = test._testMethodName.split("_")[-1]
+                test_header = f" [{test.namespace}] test_{test_num} "
+                divider = _center_with_ansi(
+                    f"{sev_color}{test_header}{Fore.RESET}", self._cols, "_"
                 )
-                self.stream.writeln()
+                self.stream.writeln(divider)
                 self.stream.writeln(err.build_err_msg())
 
-        self.stream.writeln()
         self.stream.flush()
-
-    def printLogMessages(self):
-        """Print all collected log messages at the end like Pytest."""
-        if self._log_messages:
-            self.stream.writeln(
-                f"{Fore.CYAN}{' LOG MESSAGES '.center(self._cols, '=')}{Fore.RESET}"
-            )
-            for msg in self._log_messages:
-                self.stream.writeln(f"  {msg}")
-            self.stream.writeln()
-            self.stream.flush()
-
-    def printWarnings(self):
-        """Print all collected warnings at the end (backward compatibility)."""
-        self.printLogMessages()
 
     def _tick(self, test, label: str):
         if self.verbosity:
@@ -282,7 +300,6 @@ class RuleTestRunner:
         elapsed = time.perf_counter() - t0
 
         res.printErrors()
-        res.printLogMessages()
 
         _COUNTERS = [
             ("errors", "errors"),
@@ -337,10 +354,17 @@ def _build_test_case(
     resolver = _make_partition_resolver(namespace, data_source, [])
     evaluator = _ExpressionEvaluator(data_source, resolver)
 
-    methods = {
-        f"test_{rule.lineno}": _build_test_method(rule, namespace, evaluator, output)
-        for rule in rule_nodes
-    }
+    methods = {}
+    for node in rule_nodes:
+        if isinstance(node, _ast.Alert):
+            methods[f"test_{node.lineno}"] = _build_alert_method(
+                node, namespace, evaluator, output
+            )
+        else:
+            methods[f"test_{node.lineno}"] = _build_test_method(
+                node, namespace, evaluator, output
+            )
+
     cls = type(f"Test-{namespace}", (unittest.TestCase,), methods)
     cls.namespace = namespace
     cls.data_source = data_source
@@ -371,5 +395,49 @@ def _build_test_method(
 
         if not result:
             raise RuleAssertionError(rule, history)
+
+    return test
+
+
+def _build_alert_method(
+    alert: _ast.Alert, namespace: str, evaluator: _ExpressionEvaluator, output: dict
+):
+    """Build a test method for an Alert node.
+
+    Alert nodes don't evaluate a condition. They mark a field for attention
+    with a message. The test always passes but logs a message.
+    """
+    _SEV = {Severity.INFO: "info", Severity.WARNING: "warning", Severity.ERROR: "error"}
+    formatter = ASTFormatter()
+
+    def test(inst):
+        # Evaluate the field to get its current value
+        field_expr = formatter.visit(alert.field)
+        try:
+            field_value = evaluator.evaluate(alert.field)
+            history = evaluator.history
+        except Exception:
+            field_value = "<evaluation error>"
+            history = []
+
+        output.setdefault(namespace, []).append(
+            {
+                "field": field_expr,
+                "value": field_value,
+                "msg": alert.msg,
+                "severity": _SEV[alert.severity],
+                "status": "alert",
+                "metadata": dict(history),
+            }
+        )
+
+        # Get the test result to log the alert message
+        result = inst._outcome.result if hasattr(inst, "_outcome") else None
+        if result and hasattr(result, "addLogMessage"):
+            color = alert.severity.color_code
+            result.addLogMessage(
+                f"{color}[{alert.severity.name}]{Fore.RESET} "
+                f"{field_expr} = {field_value!r}: {alert.msg}"
+            )
 
     return test

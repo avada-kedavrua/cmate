@@ -2,13 +2,12 @@ import builtins as _builtins
 import inspect
 import logging
 import operator
-import os
 import re
 from collections import defaultdict
 from typing import Any, Dict, Optional, Tuple
 
 from . import _ast, custom_fn
-from .data_source import DataSource, NA
+from .data_source import DataSource
 from .util import func_timeout, Severity
 
 
@@ -465,6 +464,11 @@ class RuleCollector(_StatementExecutor):
             return
         self._ruleset[self._namespace].add(node)
 
+    def visit_alert(self, node: _ast.Alert):
+        if self._min_severity > node.severity:
+            return
+        self._ruleset[self._namespace].add(node)
+
     def collect(self, node) -> dict:
         self.visit(node)
         return self._ruleset
@@ -508,8 +512,8 @@ class InfoCollector(NodeVisitor):
 
     def visit_partition(self, node: _ast.Partition):
         self._namespace = node.target.id
-        required_targets: set[str] = set()
-        required_contexts: set[str] = set()
+        required_targets = set()  # type: set[str]
+        required_contexts = set()  # type: set[str]
 
         if self._namespace in self._partition_map:
             logger.warning(
@@ -519,7 +523,7 @@ class InfoCollector(NodeVisitor):
         for stmt in node.body:
             self._collect_deps(stmt, required_targets, required_contexts)
 
-        if self._namespace != "env" and self._namespace not in self._dependency_map:
+        if self._namespace != 'env' and self._namespace not in self._dependency_map:
             raise CMateError(
                 f"Partition {self._namespace!r} must be declared in [dependency] section."
             )
@@ -655,134 +659,8 @@ class ASTFormatter(NodeVisitor):
     def visit_rule(self, node: _ast.Rule):
         return self.visit(node.test)
 
+    def visit_alert(self, node: _ast.Alert):
+        return self.visit(node.field)
+
     def format(self, node: _ast.Node):
         return self.visit(node)
-
-
-# ---------------------------------------------------------------------------
-# Environment script generator
-# ---------------------------------------------------------------------------
-
-
-class EnvironmentScriptGenerator(NodeVisitor):
-    """
-    Inspects the [par env] partition and generates a set_env.sh script.
-    Only emits the script when an env partition actually exists.
-    """
-
-    _SAFE_VALUE = re.compile(r"[a-zA-Z0-9_\-:.;]+")
-
-    def __init__(self, data_source: DataSource):
-        self._evaluator = _ExpressionEvaluator(data_source)
-        self._environ = os.environ.copy()
-        self._set_cmds: list[str] = []
-        self._undo_cmds: list[str] = []
-        self._has_env_partition = False
-
-    def visit_meta(self, node):
-        pass
-
-    def visit_dependency(self, node):
-        pass
-
-    def visit_global(self, node):
-        pass
-
-    def visit_partition(self, node: _ast.Partition):
-        if node.target.id != "env":
-            return
-        self._has_env_partition = True
-        for stmt in node.body:
-            self.visit(stmt)
-
-    def visit_rule(self, node: _ast.Rule):
-        self.visit(node.test)
-
-    def visit_if(self, node: _ast.If):
-        # Only walk tests to extract env assignments; don't branch-execute
-        self.visit(node.test)
-        for stmt in node.body:
-            self.visit(stmt)
-        if node.orelse:
-            for stmt in node.orelse:
-                self.visit(stmt)
-
-    def visit_for(self, node: _ast.For):
-        for stmt in node.body:
-            self.visit(stmt)
-
-    def visit_compare(self, node: _ast.Compare):
-        if not isinstance(node.left, _ast.DictPath) or node.left.namespace == "context":
-            return
-
-        env_var = node.left.path
-
-        if node.op == "==":
-            expected = self._evaluator.evaluate(node.comparator)
-        elif node.op == "in":
-            expected = self._evaluator.evaluate(node.comparator)[0]
-        else:
-            return
-
-        if expected is NA:
-            self._set_cmds.append(f"unset {env_var}")
-            return
-
-        if expected is None:
-            logger.warning(
-                "Line %d, col %d: use NA (not None) to unset an env var.",
-                node.lineno,
-                node.col_offset,
-            )
-            self._set_cmds.append(f"unset {env_var}")
-            return
-
-        if not isinstance(expected, str):
-            logger.warning(
-                "Line %d, col %d: non-str value cannot set an env var.",
-                node.lineno,
-                node.col_offset,
-            )
-            return
-
-        if not self._SAFE_VALUE.fullmatch(expected):
-            logger.warning(
-                "Line %d, col %d: value %r fails safety check.",
-                node.lineno,
-                node.col_offset,
-                expected,
-            )
-            return
-
-        original = self._environ.get(env_var)
-        self._set_cmds.append(f'export {env_var}="{expected}"')
-        self._undo_cmds.append(
-            f"unset {env_var}" if original is None else f'export {env_var}="{original}"'
-        )
-
-    def generate(self, node, output_path: str = "set_env.sh") -> bool:
-        """
-        Walk *node* and write the script to *output_path*.
-        Returns True if a script was written, False if no env partition exists.
-        """
-        self.visit(node)
-        if not self._has_env_partition:
-            return False
-
-        template = (
-            "#!/bin/bash\n"
-            "# Auto-generated by cmate – do not edit manually.\n"
-            "# Usage:\n"
-            "#   source set_env.sh    # apply changes\n"
-            "#   source set_env.sh 0  # revert changes\n\n"
-            'if [ "$1" = "0" ]; then\n'
-            "    {undo}\n"
-            "else\n"
-            "    {set}\n"
-            "fi\n"
-        )
-        set_part = "\n    ".join(self._set_cmds) or ":"
-        undo_part = "\n    ".join(self._undo_cmds) or ":"
-        with open(output_path, "w") as f:
-            f.write(template.format(set=set_part, undo=undo_part))
-        return True

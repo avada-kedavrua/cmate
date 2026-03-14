@@ -35,6 +35,7 @@ class Lexer:
     conditiion_keywords = {"if": "IF", "elif": "ELIF", "else": "ELSE", "fi": "FI"}
     rule_keywords = {
         "assert": "ASSERT",
+        "alert": "ALERT",
         "error": "ERROR",
         "warning": "WARNING",
         "info": "INFO",

@@ -17,6 +17,7 @@
 from ply import yacc
 
 from ._ast import (
+    Alert,
     Assign,
     BinOp,
     Break,
@@ -428,7 +429,6 @@ class Parser:
         partition : '[' PAR name ']' rule_stmts
                   | '[' PAR name ']' rule_stmts END
         """
-
         p[0] = Partition(p[3], p[5])
 
     @staticmethod
@@ -445,6 +445,8 @@ class Parser:
         """
         rule_stmt : ASSERT expr ',' STR
                   | ASSERT expr ',' STR ',' severity
+                  | ALERT dict_path ',' STR
+                  | ALERT dict_path ',' STR ',' severity
                   | if_rule_stmt
                   | for_rule_stmt
                   | continue
@@ -455,6 +457,9 @@ class Parser:
         if tok.type == "ASSERT":
             severity = Severity.ERROR if len(p) == 5 else p[6]
             p[0] = Rule(tok.lineno, tok.col_offset, p[2], p[4], severity)
+        elif tok.type == "ALERT":
+            severity = Severity.WARNING if len(p) == 5 else p[6]
+            p[0] = Alert(tok.lineno, tok.col_offset, p[2], p[4], severity)
         else:
             p[0] = p[1]
 

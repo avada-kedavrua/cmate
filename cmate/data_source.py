@@ -119,7 +119,7 @@ class DataSource:
 
     def __init__(self):
         self._nss: Dict[str, Namespace] = defaultdict(Namespace)
-        self._nss["global"]["cur_ip"] = get_cur_ip()
+        self._nss["global"]["cur_ip"] = get_cur_ip().compressed
 
     def _resolve(self, key) -> Tuple[str, str]:
         """Return (namespace, path) from a NamespacedKey or raw string."""

@@ -122,6 +122,23 @@ class Rule(Stmt):
         self.severity = severity
 
 
+class Alert(Stmt):
+    """Alert statement for marking fields that need attention.
+
+    Unlike Rule (assert), Alert doesn't evaluate a condition.
+    It simply marks a field for attention with a message.
+    Default severity is WARNING.
+    """
+
+    __slots__ = ("field", "msg", "severity")
+
+    def __init__(self, lineno, col_offset, field, msg, severity):
+        super().__init__(lineno, col_offset)
+        self.field = field
+        self.msg = msg
+        self.severity = severity
+
+
 class Break(Stmt):
     # Inherits lineno/col_offset from Stmt; must call super().__init__
     __slots__ = ()
