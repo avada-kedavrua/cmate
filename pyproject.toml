@@ -4,14 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cmate"
-version = "0.1.0"
+version = "0.2.0"
 description = "CMate rule validator and test runner"
+readme = "README.md"
 requires-python = ">=3.7"
 dependencies = [
     "ply",
     "psutil",
     "pyyaml",
-    "msguard"
+    "msguard",
+    "colorama"
 ]
 
 [project.scripts]
