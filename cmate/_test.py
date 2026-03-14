@@ -166,10 +166,6 @@ class RuleTestResult(unittest.TestResult):
         """Print all collected warnings at the end (backward compatibility)."""
         self.printLogMessages()
 
-    def _update(self, test, ch):
-        PERCENT_PADDING = 1
-    # -- internal tick -------------------------------------------------------
-
     def _tick(self, test, label: str):
         if self.verbosity:
             self._tick_verbose(test, label)
