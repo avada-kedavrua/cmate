@@ -28,7 +28,13 @@ from ._test import make_test_suite, RuleTestRunner
 from .data_source import DataSource, NAType
 from .parser import Parser
 from .util import load_from_file, ParseFormat, ParseFormatError
-from .visitor import AssignmentProcessor, ASTFormatter, InfoCollector, RuleCollector
+from .visitor import (
+    AssignmentProcessor,
+    ASTFormatter,
+    EnvScriptGenerator,
+    InfoCollector,
+    RuleCollector,
+)
 
 
 LOG_LEVELS = {
@@ -41,6 +47,8 @@ LOG_LEVELS = {
 LOG_FORMAT = "[%(levelname)s] [%(name)s] %(message)s"
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_ENV_SCRIPT = Path("set_env.sh")
 
 
 # ---------------------------------------------------------------------------
@@ -454,8 +462,14 @@ def run(
     output_path: Optional[Path] = None,
     severity: str = "info",
     lines: Optional[str] = None,
+    env_script_path: Optional[Path] = _DEFAULT_ENV_SCRIPT,
 ) -> int:
     """Validate configurations against rules defined in a cmate rule file.
+
+    Args:
+        env_script_path: Where to write the generated ``set_env.sh`` script.
+            Defaults to ``set_env.sh`` in the current directory.
+            Set to ``None`` to disable generation.
 
     Returns:
         0 on success, 1 on failure.
@@ -477,6 +491,15 @@ def run(
     data_source = _load_dependencies(info, parsed_configs, parsed_contexts)
 
     AssignmentProcessor(parsed_configs, data_source).process(node)
+
+    # Generate env script when an [par env] section exists
+    if env_script_path is not None and "env" in info["targets"]:
+        try:
+            gen = EnvScriptGenerator(data_source)
+            gen.collect(node)
+            gen.write(env_script_path)
+        except Exception:
+            logger.warning("Failed to generate env script", exc_info=True)
 
     try:
         ruleset = RuleCollector(parsed_configs, data_source, severity).collect(node)
@@ -656,6 +679,18 @@ def main(args: Optional[List[str]] = None) -> int:
         type=str,
         help="Comma-separated line numbers to run (e.g., '10,20,30')",
     )
+    run_parser.add_argument(
+        "--env-script",
+        type=Path,
+        default=Path("set_env.sh"),
+        help="Path for generated env script (default: set_env.sh)",
+    )
+    run_parser.add_argument(
+        "--no-env-script",
+        action="store_true",
+        dest="no_env_script",
+        help="Suppress env script generation",
+    )
 
     # -- inspect -------------------------------------------------------------
     inspect_parser = subparsers.add_parser(
@@ -690,6 +725,7 @@ def main(args: Optional[List[str]] = None) -> int:
         return 0
 
     # run
+    env_script = None if parsed.no_env_script else parsed.env_script
     try:
         return run(
             parsed.rule,
@@ -701,6 +737,7 @@ def main(args: Optional[List[str]] = None) -> int:
             parsed.output_path,
             parsed.severity,
             parsed.lines,
+            env_script,
         )
     except (OSError, ValueError, ParseFormatError, CmateError):
         logger.exception("Error during run")
