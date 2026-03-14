@@ -9,7 +9,7 @@
   <a href="#installation">Installation</a> &bull;
   <a href="#quick-start">Quick Start</a> &bull;
   <a href="docs/en/quick_start.md">Guide</a> &bull;
-  <a href="README.md">中文</a> &bull;
+  <a href="README_CN.md">中文</a> &bull;
   <a href="#license">License</a>
 </p>
 
@@ -35,7 +35,7 @@ CMate solves this by using **context variables** to manage scenario switching, a
 - **Multiple data sources**: Validate JSON, YAML config files and environment variables
 - **Env script generation**: Automatically generates `set_env.sh` from `[par env]` rules — `source` it to apply or revert environment variables
 - **pytest-style output**: Collection, execution, and reporting follow pytest conventions
-- **Control flow**: `if/elif/else/fi` conditionals and `for/done` loops
+- **Control flow**: `if/elif/else/fi` conditionals, `for/done` loops, and `break`/`continue`
 - **Extensible functions**: Built-in `len()`, `int()`, `str()`, etc., with custom extensions via `custom_fn.py`
 
 ## Installation
@@ -53,7 +53,7 @@ pip install cmate
 ### Install from source
 
 ```bash
-git clone https://gitcode.com/AvadaKedavrua/cmate.git
+git clone https://github.com/avada-kedavrua/cmate.git # or https://gitcode.com/AvadaKedavrua/cmate.git
 cd cmate
 pip install -e .
 ```
@@ -119,14 +119,10 @@ source set_env.sh
 source set_env.sh 0
 ```
 
-Customize the output path or disable generation:
+To invoke the script:
 
 ```bash
-# Custom path
-cmate run rules.cmate -c env --env-script /tmp/my_env.sh
-
-# Disable generation
-cmate run rules.cmate -c env --no-env-script
+cmate run rules.cmate -c env
 ```
 
 ## Rule File Syntax
@@ -157,7 +153,7 @@ env_config: 'Environment config' @ 'yaml'
 
 Supply actual file paths at runtime via `-c`: `cmate run rules.cmate -c config:app.json`
 
-The special target `env` reads current environment variables without a file path.
+The special target `env` is built-in for environment variable validation and **cannot** be declared in `[targets]`. Use it directly as a `[par env]` section and pass `-c env` at runtime.
 
 ### `[contexts]` — Context variables
 
@@ -190,12 +186,13 @@ fi
 
 ### `[par <target>]` — Partition rules
 
-`par` is short for *partition*. Each partition corresponds to a target and contains `assert` statements:
+`par` is short for *partition*. Each partition corresponds to a target and contains `assert` or `alert` statements:
 
 ```
 [par config]
-# Basic assertion: assert <expression>, 'message', <severity>
-assert ${config::enabled} == true, 'Service must be enabled', error
+# Basic assertion: assert <expression>, 'message'[, <severity>]
+# severity defaults to 'error' if omitted
+assert ${config::enabled} == true, 'Service must be enabled'
 assert ${config::port} > 1024, 'Port should be above 1024', info
 
 # Conditional assertion
@@ -208,7 +205,13 @@ for host in ${config::allowed_hosts}:
     assert ${host} != '', 'Hostname must not be empty', error
 done
 
+# Tuple unpacking in loops
+for key, value in ${config::env_pairs}:
+    assert ${value} != '', 'Value must not be empty', error
+done
+
 # alert statement: flag a field for manual review, no condition evaluated
+# accepts only ${namespace::path} expressions; severity defaults to 'warning'
 alert ${config::model_path}, 'Please verify the model path', warning
 ```
 
@@ -230,9 +233,10 @@ ${config::server.port}
 ${config::items[0].name}
 ${context::deploy_mode}
 
-# Comparison: ==, !=, <, >, <=, >=, =~ (regex match), in
+# Comparison: ==, !=, <, >, <=, >=, =~ (regex match), in, not in
 # Logical: and, or, not
 # Arithmetic: +, -, *, /, //, %, **
+# Singletons: true, false, None, NA  (NA is the sentinel for missing values)
 # Built-in functions: len(), int(), str(), range(), path_exists(), is_port_in_use(), etc.
 ```
 
@@ -241,14 +245,14 @@ ${context::deploy_mode}
 ```bash
 # Run validation
 cmate run <rule_file> [options]
-  -c, --configs   Config files: '<name>:<path>[@<format>]' or 'env'
-  -C, --contexts  Context variables: '<name>:<value>'
-  -s, --severity  Minimum severity filter: info | warning | error (default: info)
-  -x, --fail-fast Stop on first failure
-  -v, --verbose   Verbose output
-  -k, --lines     Filter rules by line number: '10,20,30'
-  -co, --collect-only  List rules without executing
-  --output-path   Directory for JSON result output
+  -c, --configs       Config files: '<name>:<path>[@<format>]' or 'env'
+  -C, --contexts      Context variables: '<name>:<value>'
+  -s, --severity      Minimum severity filter: info | warning | error (default: info)
+  -x, --fail-fast     Stop on first failure
+  -v, --verbose       Verbose output
+  -k, --lines         Filter rules by line number: '10,20,30'
+  -co, --collect-only List rules without executing
+  --output-path       Directory for JSON result output
 
 # Inspect rule file
 cmate inspect <rule_file> [options]
@@ -280,9 +284,9 @@ Issues and Pull Requests are welcome.
 
 ```bash
 # Development setup
-git clone https://gitcode.com/AvadaKedavrua/cmate.git
+git clone https://github.com/avada-kedavrua/cmate.git # or https://gitcode.com/AvadaKedavrua/cmate.git
 cd cmate
-pip install -e ".[dev]"
+pip install -e .
 
 # Run tests
 pytest tests/

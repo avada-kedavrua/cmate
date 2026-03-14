@@ -53,7 +53,7 @@ pip install cmate
 ### 从源码安装
 
 ```bash
-git clone https://gitcode.com/AvadaKedavrua/cmate.git
+git clone https://github.com/avada-kedavrua/cmate.git # or https://gitcode.com/AvadaKedavrua/cmate.git
 cd cmate
 pip install -e .
 ```
@@ -119,14 +119,10 @@ source set_env.sh
 source set_env.sh 0
 ```
 
-自定义输出路径或禁用生成：
+生成脚本只需要：
 
 ```bash
-# 自定义路径
-cmate run rules.cmate -c env --env-script /tmp/my_env.sh
-
-# 禁用生成
-cmate run rules.cmate -c env --no-env-script
+cmate run rules.cmate -c env
 ```
 
 ## 规则文件语法
@@ -249,8 +245,6 @@ cmate run <rule_file> [选项]
   -k, --lines     按行号筛选规则: '10,20,30'
   -co, --collect-only  仅收集并列出规则，不执行
   --output-path   JSON 结果文件输出目录
-  --env-script    环境变量脚本输出路径（默认 set_env.sh）
-  --no-env-script 禁用环境变量脚本生成
 
 # 查看规则文件信息
 cmate inspect <rule_file> [选项]
@@ -282,9 +276,9 @@ cmate/
 
 ```bash
 # 开发环境
-git clone https://gitcode.com/AvadaKedavrua/cmate.git
+git clone https://github.com/avada-kedavrua/cmate.git # or https://gitcode.com/AvadaKedavrua/cmate.git
 cd cmate
-pip install -e ".[dev]"
+pip install -e .
 
 # 运行测试
 pytest tests/

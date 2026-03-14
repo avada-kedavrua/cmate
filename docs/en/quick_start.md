@@ -122,8 +122,8 @@ Overview
 
 Context Variables
 -----------------
-  env : ['dev', 'staging', 'production']
-    Deployment environment
+  env : ['production']
+    Deployment environment, options: dev / staging / production
 
 Config Targets
 --------------
@@ -134,6 +134,11 @@ Config Targets
 
 Usage: -c <rule_name>:<file_path>  -C <context>:<value>
 ```
+
+> [!Note]
+> The options list under `Context Variables` shows values that appear in actual
+> `if/elif` conditions in the rule file (e.g. `${context::env} == 'production'`). Values
+> only mentioned in descriptions are not included.
 
 ### Collect rules only
 
@@ -195,22 +200,21 @@ Results are saved to `./results/cmate_<timestamp>_output.json`.
 
 ## Validating Environment Variables
 
-cmate can validate current shell environment variables directly:
+`env` is a built-in target that reads your current shell environment variables. It does **not** need to be declared in `[targets]`. Write a `[par env]` section and pass `-c env` at runtime:
 
 ```
-[targets]
-env_config: 'Environment variable config' @ 'json'
----
-
 [par env]
-assert ${OMP_NUM_THREADS} == '10', 'OMP thread count should be 10', info
+assert ${OMP_NUM_THREADS} == '10', 'Recommended OMP thread count is 10', info
+assert ${CUDA_VISIBLE_DEVICES} != '', 'GPU device must be set', error
 ```
 
-Pass `env` as a target at runtime (no file path needed):
+Run:
 
 ```bash
 cmate run env_check.cmate -c env
 ```
+
+Inside `[par env]`, unqualified variable names like `${OMP_NUM_THREADS}` resolve to the `env` namespace automatically, equivalent to `${env::OMP_NUM_THREADS}`.
 
 ## Looping Over List Fields
 
@@ -222,9 +226,18 @@ for host in ${cfg::server.allowed_hosts}:
 done
 ```
 
+For lists of key-value pairs, tuple unpacking is also supported:
+
+```
+[par cfg]
+for key, value in ${cfg::env_pairs}:
+    assert ${value} != '', 'Value must not be empty', error
+done
+```
+
 ## The `alert` Statement
 
-`alert` differs from `assert` — it doesn't evaluate a condition. It flags a field for manual review:
+`alert` differs from `assert` — it doesn't evaluate a condition. It flags a field for manual review. The field must be a `${namespace::path}` reference; arbitrary expressions are not accepted. Severity defaults to `warning` if omitted.
 
 ```
 [par cfg]
@@ -240,14 +253,16 @@ Alerts don't affect the pass/fail count and are shown in a separate `ALERTS` sec
 | Data access | `${config::key.path}` | namespace::jsonpath style |
 | Comparison | `==`, `!=`, `<`, `>`, `<=`, `>=` | Standard comparison |
 | Regex match | `=~` | `${val} =~ '^[a-z]+$'` |
-| Membership | `in` | `${val} in ['a', 'b']` |
+| Membership | `in`, `not in` | `${val} in ['a', 'b']` |
 | Logical | `and`, `or`, `not` | Boolean combinators |
 | Arithmetic | `+`, `-`, `*`, `/`, `//`, `%`, `**` | Standard arithmetic |
 | Conditional | `if ... elif ... else ... fi` | Shell-style branching |
-| Loop | `for x in <iterable>: ... done` | Shell-style loop |
-| Assertion | `assert <expr>, 'msg', severity` | severity: error/warning/info |
-| Alert | `alert <expr>, 'msg', severity` | Flag field, no condition check |
+| Loop | `for x in <iterable>: ... done` | Shell-style loop; supports `for x, y in ...` tuple unpacking |
+| Loop control | `break`, `continue` | Exit or skip loop iteration |
+| Assertion | `assert <expr>, 'msg'[, severity]` | severity: error/warning/info; defaults to `error` |
+| Alert | `alert ${ns::path}, 'msg'[, severity]` | Flag field, no condition check; defaults to `warning` |
 | Function call | `len()`, `int()`, `str()`, `range()` | Built-in + custom functions |
+| Singletons | `true`, `false`, `None`, `NA` | `NA` is the sentinel for missing/inapplicable values |
 
 ## Real-World Example: LLM Inference Config
 
