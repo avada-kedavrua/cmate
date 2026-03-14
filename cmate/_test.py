@@ -28,36 +28,6 @@ from .util import Severity
 from .visitor import ASTFormatter, _ExpressionEvaluator, _make_partition_resolver
 
 
-class LogCollector(logging.Handler):
-    """Custom logging handler to collect all log messages for display at the end."""
-
-    def __init__(self):
-        super().__init__(level=logging.INFO)
-        self.messages = []
-
-    def emit(self, record):
-        # Collect all log messages (INFO, WARNING, ERROR)
-        self.messages.append(self.format(record))
-
-    def get_messages(self):
-        return self.messages
-
-    def clear(self):
-        self.messages = []
-
-    # Backward compatibility properties
-    @property
-    def warnings(self):
-        return self.messages
-
-    def get_warnings(self):
-        return self.messages
-
-
-# Keep WarningCollector for backward compatibility
-WarningCollector = LogCollector
-
-
 class RuleAssertionError(AssertionError):
     """Carries the failed Rule node and the evaluator's variable history."""
 

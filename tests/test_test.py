@@ -1,19 +1,18 @@
 import logging
 import unittest
 from io import StringIO
-from unittest.mock import MagicMock, patch  # noqa: F401
+from unittest.mock import MagicMock
 
 import pytest
 
 from cmate._ast import Compare, Constant, DictPath, Rule
 from cmate._test import (
-    _make_test_case,
-    _make_test_method,
+    _build_test_case,
+    _build_test_method,
     make_test_suite,
     RuleAssertionError,
     RuleTestResult,
     RuleTestRunner,
-    WarningCollector,
 )
 from cmate.util import Severity
 
@@ -197,35 +196,35 @@ class TestMakeTestSuite:
 
 
 class TestMakeTestCase:
-    """Tests for _make_test_case function"""
+    """Tests for _build_test_case function"""
 
-    def test_make_test_case(self):
+    def test_build_test_case(self):
         """Test creating test case class"""
         rule = Rule(1, 1, Constant(1, 1, True), "test", Severity.ERROR)
-        cls = _make_test_case("TestClass", {rule}, "test_ns", {})
+        cls = _build_test_case("TestClass", {rule}, "test_ns", {})
 
         assert cls.__name__ == "TestClass"
         assert hasattr(cls, "test_1")
 
-    def test_make_test_case_multiple_rules(self):
+    def test_build_test_case_multiple_rules(self):
         """Test creating test case with multiple rules"""
         rule1 = Rule(10, 1, Constant(10, 1, True), "test1", Severity.ERROR)
         rule2 = Rule(20, 1, Constant(20, 1, True), "test2", Severity.WARNING)
-        cls = _make_test_case("TestClass", {rule1, rule2}, "test_ns", {})
+        cls = _build_test_case("TestClass", {rule1, rule2}, "test_ns", {})
 
         assert hasattr(cls, "test_10")
         assert hasattr(cls, "test_20")
 
 
 class TestMakeTestMethod:
-    """Tests for _make_test_method function"""
+    """Tests for _build_test_method function"""
 
-    def test_make_test_method_pass(self):
+    def test_build_test_method_pass(self):
         """Test creating test method that passes"""
         const = Constant(1, 1, True)
         rule = Rule(1, 1, const, "test message", Severity.ERROR)
 
-        test_method = _make_test_method(rule, "test_ns", {})
+        test_method = _build_test_method(rule, "test_ns", {})
 
         # Create a mock instance
         inst = MagicMock()
@@ -235,12 +234,12 @@ class TestMakeTestMethod:
         # Should not raise
         test_method(inst)
 
-    def test_make_test_method_fail(self):
+    def test_build_test_method_fail(self):
         """Test creating test method that fails"""
         const = Constant(1, 1, False)
         rule = Rule(1, 1, const, "test message", Severity.ERROR)
 
-        test_method = _make_test_method(rule, "test_ns", {})
+        test_method = _build_test_method(rule, "test_ns", {})
 
         inst = MagicMock()
         inst.evaluator.evaluate.return_value = False
@@ -249,19 +248,19 @@ class TestMakeTestMethod:
         with pytest.raises(RuleAssertionError):
             test_method(inst)
 
-    def test_make_test_method_output_populated(self):
+    def test_build_test_method_output_populated(self):
         """Test that test method populates output dictionary"""
         const = Constant(1, 1, True)
         rule = Rule(1, 1, const, "test message", Severity.ERROR)
 
-        test_method = _make_test_method(rule, "test_ns", {})
+        test_method = _build_test_method(rule, "test_ns", {})
 
         inst = MagicMock()
         inst.evaluator.evaluate.return_value = True
         inst.evaluator.history = [("key", "value")]
 
         output = {}
-        test_method = _make_test_method(rule, "test_ns", output)
+        test_method = _build_test_method(rule, "test_ns", output)
         test_method(inst)
 
         assert "test_ns" in output
@@ -282,80 +281,6 @@ class TestRuleTestRunnerExtended:
         stream = StringIO()
         runner = RuleTestRunner(stream=stream, rescls=CustomResult)
         assert runner.rescls == CustomResult
-
-
-class TestWarningCollector:
-    """Tests for WarningCollector class"""
-
-    def test_warning_collector_creation(self):
-        """Test WarningCollector creation"""
-        collector = WarningCollector()
-        assert collector.warnings == []
-
-    def test_warning_collector_emit(self):
-        """Test WarningCollector emit method"""
-        collector = WarningCollector()
-        record = logging.LogRecord(
-            name="test",
-            level=logging.WARNING,
-            pathname="",
-            lineno=0,
-            msg="Test warning",
-            args=(),
-            exc_info=None,
-        )
-        collector.emit(record)
-        assert len(collector.warnings) == 1
-        assert "Test warning" in collector.warnings[0]
-
-    def test_warning_collector_emit_info(self):
-        """Test LogCollector now collects all log levels including INFO"""
-        collector = WarningCollector()
-        record = logging.LogRecord(
-            name="test",
-            level=logging.INFO,
-            pathname="",
-            lineno=0,
-            msg="Test info",
-            args=(),
-            exc_info=None,
-        )
-        collector.emit(record)
-        # Now LogCollector collects all log levels (INFO and above)
-        assert len(collector.messages) == 1
-        assert "Test info" in collector.messages[0]
-
-    def test_warning_collector_get_warnings(self):
-        """Test WarningCollector get_warnings method"""
-        collector = WarningCollector()
-        record = logging.LogRecord(
-            name="test",
-            level=logging.WARNING,
-            pathname="",
-            lineno=0,
-            msg="Test warning",
-            args=(),
-            exc_info=None,
-        )
-        collector.emit(record)
-        warnings = collector.get_warnings()
-        assert len(warnings) == 1
-
-    def test_warning_collector_clear(self):
-        """Test WarningCollector clear method"""
-        collector = WarningCollector()
-        record = logging.LogRecord(
-            name="test",
-            level=logging.WARNING,
-            pathname="",
-            lineno=0,
-            msg="Test warning",
-            args=(),
-            exc_info=None,
-        )
-        collector.emit(record)
-        collector.clear()
-        assert collector.warnings == []
 
 
 class TestRuleTestResultExtended:
@@ -494,42 +419,6 @@ class TestRuleTestResultExtended:
 
         result.addSkip(test, "skipped reason")
         assert len(result.skipped) == 1
-
-
-class TestRuleTestRunnerWarnings:
-    """Tests for RuleTestRunner warning collection"""
-
-    def test_setup_warning_collection(self):
-        """Test _setup_warning_collection method"""
-        stream = StringIO()
-        runner = RuleTestRunner(stream=stream)
-        runner._setup_warning_collection()
-        # Check that WarningCollector was added to logger handlers
-        logger = logging.getLogger()
-        has_collector = any(isinstance(h, WarningCollector) for h in logger.handlers)
-        assert has_collector
-
-    def test_transfer_warnings_to_result(self):
-        """Test _transfer_warnings_to_result method"""
-        stream = StringIO()
-        runner = RuleTestRunner(stream=stream)
-        result = RuleTestResult(stream=stream)
-
-        # Add a warning to the collector
-        record = logging.LogRecord(
-            name="test",
-            level=logging.WARNING,
-            pathname="",
-            lineno=0,
-            msg="Test warning",
-            args=(),
-            exc_info=None,
-        )
-        runner._warning_collector.emit(record)
-
-        runner._transfer_warnings_to_result(result)
-        assert "Test warning" in result._log_messages
-        assert runner._warning_collector.messages == []
 
 
 class TestRuleTestResultPrintErrors:
