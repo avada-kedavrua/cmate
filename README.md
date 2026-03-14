@@ -1,56 +1,56 @@
 # CMate
 
 <p align="center">
-  <b>你的配置校验伴侣 — Config Mate</b>
+  <b>Your Config Validation Companion</b>
 </p>
 
 <p align="center">
-  <a href="#简介">简介</a> &bull;
-  <a href="#安装">安装</a> &bull;
-  <a href="#快速开始">快速开始</a> &bull;
-  <a href="docs/zh/quick_start.md">详细指南</a> &bull;
-  <a href="README_en.md">English</a> &bull;
-  <a href="#许可证">许可证</a>
+  <a href="#introduction">Introduction</a> &bull;
+  <a href="#installation">Installation</a> &bull;
+  <a href="#quick-start">Quick Start</a> &bull;
+  <a href="docs/en/quick_start.md">Guide</a> &bull;
+  <a href="README.md">中文</a> &bull;
+  <a href="#license">License</a>
 </p>
 
 ---
 
-## 简介
+## Introduction
 
-**CMate**（**C**onfig **Mate**）是一个面向配置文件的声明式校验引擎。名字灵感来源于国际象棋中的 *Check Mate*（将杀）—— 它是你的配置"校验伴侣"，帮你精准拦截配置问题。
+**CMate** (**C**onfig **Mate**) is a declarative validation engine for configuration files. The name draws inspiration from the chess term *Check Mate* — it's your configuration "check mate", catching config issues before they reach production.
 
-### 为什么需要 CMate?
+### Why CMate?
 
-配置文件的正确性校验只是基本诉求。真正的痛点在于：**同一套配置字段，在不同的部署场景下，最优值可能完全不同。**
+Basic correctness checking is table stakes. The real challenge is: **the same configuration fields may have entirely different optimal values depending on the deployment scenario.**
 
-以大模型推理服务为例：PD 混部和 PD 分离场景下，同一个参数的推荐值可能截然不同；DeepSeek 模型和通用模型需要检查的字段集也不一样。这些"哪些字段在什么场景下应该设什么值"的组合逻辑，通常只存在于专家经验中，难以沉淀和传递。
+Take LLM inference services as an example: a PD co-located deployment and a PD disaggregated deployment may require very different recommended values for the same parameter; DeepSeek models and general-purpose models need different validation rule sets. The combinatorial logic of "which fields should have what values under which conditions" typically lives only in expert knowledge — hard to capture and share.
 
-CMate 通过 **context（上下文变量）** 来管理场景切换，通过 **severity（严重级别）** 来区分推荐配置和强制要求，将这些经验编码为可分发、可执行的 `.cmate` 规则文件。
+CMate solves this by using **context variables** to manage scenario switching, and **severity levels** to distinguish between recommended and mandatory settings. Expert knowledge gets encoded into distributable, executable `.cmate` rule files.
 
-### 核心特性
+### Key Features
 
-- **直觉化 DSL**：语法借鉴 Python、Shell 和 JsonPath，每写一条校验规则就像写一行单元测试
-- **上下文驱动**：通过 `-C` 传入 context 变量，同一份规则文件可适配不同部署场景
-- **三级严重度**：`error`（强制）/ `warning`（告警）/ `info`（推荐），按需过滤执行
-- **多数据源**：支持 JSON、YAML 配置文件及环境变量作为校验目标
-- **环境变量脚本生成**：自动根据 `[par env]` 规则生成 `set_env.sh`，一键 `source` 即可设置或还原环境变量
-- **pytest 风格输出**：收集、执行、报告的展示风格借鉴 pytest，对开发者友好
-- **条件与循环**：支持 `if/elif/else/fi` 条件分支和 `for/done` 循环
-- **可扩展函数**：内置 `len()`、`int()`、`str()` 等函数，支持在 `custom_fn.py` 中自定义扩展
+- **Intuitive DSL**: Syntax inspired by Python, Shell, and JsonPath — writing a validation rule feels like writing a unit test
+- **Context-driven**: Pass context variables via `-C` to adapt the same rule file to different deployment scenarios
+- **Three severity levels**: `error` (mandatory) / `warning` (alert) / `info` (recommendation), filterable at runtime
+- **Multiple data sources**: Validate JSON, YAML config files and environment variables
+- **Env script generation**: Automatically generates `set_env.sh` from `[par env]` rules — `source` it to apply or revert environment variables
+- **pytest-style output**: Collection, execution, and reporting follow pytest conventions
+- **Control flow**: `if/elif/else/fi` conditionals and `for/done` loops
+- **Extensible functions**: Built-in `len()`, `int()`, `str()`, etc., with custom extensions via `custom_fn.py`
 
-## 安装
+## Installation
 
-### 环境要求
+### Requirements
 
 - Python >= 3.7
 
-### pip 安装
+### Install via pip
 
 ```bash
 pip install cmate
 ```
 
-### 从源码安装
+### Install from source
 
 ```bash
 git clone https://gitcode.com/AvadaKedavrua/cmate.git
@@ -58,24 +58,24 @@ cd cmate
 pip install -e .
 ```
 
-## 快速开始
+## Quick Start
 
-> 完整的快速上手教程请查看 [详细指南](docs/zh/quick_start.md)。
+> For a full walkthrough, see the [Quick Start Guide](docs/en/quick_start.md).
 
-创建规则文件 `demo.cmate`：
+Create `demo.cmate`:
 
 ```
 [metadata]
-name = '服务端口配置检查'
+name = 'Server Port Validation'
 version = '1.0'
 ---
 
 [targets]
-config: '应用配置文件' @ 'json'
+config: 'Application config file' @ 'json'
 ---
 
 [contexts]
-env: '部署环境，可选值: dev / staging / production'
+env: 'Deployment environment, options: dev / staging / production'
 ---
 
 [global]
@@ -86,12 +86,12 @@ fi
 ---
 
 [par config]
-assert ${config::port} > ${min_port}, '端口号过低', error
-assert ${config::host} != '', '主机名不能为空', error
-assert ${config::timeout} >= 1000, '建议超时时间 >= 1000ms', info
+assert ${config::port} > ${min_port}, 'Port number is too low', error
+assert ${config::host} != '', 'Hostname must not be empty', error
+assert ${config::timeout} >= 1000, 'Recommended timeout >= 1000ms', info
 ```
 
-准备 `app.json`：
+Create `app.json`:
 
 ```json
 {
@@ -101,82 +101,82 @@ assert ${config::timeout} >= 1000, '建议超时时间 >= 1000ms', info
 }
 ```
 
-运行：
+Run:
 
 ```bash
 cmate run demo.cmate -c config:app.json -C env:production
 ```
 
-## 环境变量脚本生成
+## Environment Variable Script Generation
 
-当规则文件中包含 `[par env]` 段时，`cmate run` 会自动在当前目录生成 `set_env.sh` 脚本。该脚本根据规则中的期望值，一键设置或还原环境变量：
+When a rule file contains a `[par env]` section, `cmate run` automatically generates a `set_env.sh` script in the current directory. The script sets (or unsets) environment variables to match the expected values declared in your rules:
 
 ```bash
-# 应用规则推荐的环境变量
+# Apply the recommended environment variables
 source set_env.sh
 
-# 还原为运行 cmate 之前的值
+# Revert to the values before cmate was run
 source set_env.sh 0
 ```
 
-自定义输出路径或禁用生成：
+Customize the output path or disable generation:
 
 ```bash
-# 自定义路径
+# Custom path
 cmate run rules.cmate -c env --env-script /tmp/my_env.sh
 
-# 禁用生成
+# Disable generation
 cmate run rules.cmate -c env --no-env-script
 ```
 
-## 规则文件语法
+## Rule File Syntax
 
-一个 `.cmate` 文件由以下几个段落（section）组成，段落之间用 `---` 分隔：
+A `.cmate` file consists of sections separated by `---`:
 
-### `[metadata]` — 元数据
+### `[metadata]` — Metadata
 
 ```
 [metadata]
-name = '规则集名称'
+name = 'Rule set name'
 version = '1.0'
-authors = [{"name": "作者"}]
-description = '规则集描述'
+authors = [{"name": "Author"}]
+description = 'Rule set description'
 ---
 ```
 
-### `[targets]` — 校验目标声明
+### `[targets]` — Validation targets
 
-声明规则文件需要哪些配置文件作为输入，格式为 `名称: '描述' @ '格式'`：
+Declare which configuration files are needed as input. Format: `name: 'description' @ 'format'`:
 
 ```
 [targets]
-config: '主配置文件' @ 'json'
-env_config: '环境变量配置' @ 'yaml'
+config: 'Main config file' @ 'json'
+env_config: 'Environment config' @ 'yaml'
 ---
 ```
 
-运行时通过 `-c` 传入实际文件路径：`cmate run rules.cmate -c config:app.json`
+Supply actual file paths at runtime via `-c`: `cmate run rules.cmate -c config:app.json`
 
-特殊目标 `env` 表示读取当前环境变量，无需指定文件。
+The special target `env` reads current environment variables without a file path.
 
-### `[contexts]` — 上下文变量声明
+### `[contexts]` — Context variables
 
-声明规则文件接受哪些上下文变量，用于按场景切换校验逻辑：
+Declare which context variables the rule file accepts for scenario-based branching:
 
 ```
 [contexts]
-deploy_mode: '部署模式，可选值: pd_mix / pd_disaggregation / ep'
-model_type: '模型类型，如 deepseek / general'
+deploy_mode: 'Deployment mode, options: pd_mix / pd_disaggregation / ep'
+model_type: 'Model type, e.g. deepseek / general'
 ---
 ```
 
-运行时通过 `-C` 传入：`cmate run rules.cmate -c config:app.json -C deploy_mode:ep`
+Supply values at runtime via `-C`: `cmate run rules.cmate -c config:app.json -C deploy_mode:ep`
 
-在规则中通过 `${context::变量名}` 引用。
+Reference in rules with `${context::variable_name}`.
 
-### `[global]` — 全局变量
+### `[global]` — Global variables
 
-定义全局变量和条件赋值逻辑，可在后续 `[par]` 段中引用：
+Define global variables and conditional assignment logic, available in subsequent `[par]` sections:
 
 ```
 [global]
@@ -188,114 +188,112 @@ fi
 ---
 ```
 
-### `[par <target>]` — 分区校验规则
+### `[par <target>]` — Partition rules
 
-`par` 是 partition 的缩写，每个分区对应一个 target，在其中编写 `assert` 断言：
+`par` is short for *partition*. Each partition corresponds to a target and contains `assert` statements:
 
 ```
 [par config]
-# 基本断言：assert <表达式>, '消息', <严重级别>
-assert ${config::enabled} == true, '服务必须启用', error
-assert ${config::port} > 1024, '端口建议大于 1024', info
+# Basic assertion: assert <expression>, 'message', <severity>
+assert ${config::enabled} == true, 'Service must be enabled', error
+assert ${config::port} > 1024, 'Port should be above 1024', info
 
-# 条件断言
+# Conditional assertion
 if ${context::deploy_mode} == 'production':
-    assert ${config::ssl} == true, '生产环境必须启用 SSL', error
+    assert ${config::ssl} == true, 'SSL is required in production', error
 fi
 
-# 循环断言
+# Loop assertion
 for host in ${config::allowed_hosts}:
-    assert ${host} != '', '主机名不能为空', error
+    assert ${host} != '', 'Hostname must not be empty', error
 done
 
-# alert 语句：标记字段供人工确认，不做条件判断
-alert ${config::model_path}, '请确认模型路径正确', warning
+# alert statement: flag a field for manual review, no condition evaluated
+alert ${config::model_path}, 'Please verify the model path', warning
 ```
 
-### 严重级别
+### Severity Levels
 
-| 级别 | 含义 | 输出标记 |
-|------|------|----------|
-| `error` | 强制要求，不满足即失败 | `[NOK]` |
-| `warning` | 告警，建议修复 | `[WARNING]` |
-| `info` | 推荐配置，供参考 | `[RECOMMEND]` |
+| Level | Meaning | Output Label |
+|-------|---------|-------------|
+| `error` | Mandatory — failure if not met | `[NOK]` |
+| `warning` | Alert — recommended fix | `[WARNING]` |
+| `info` | Recommendation — for reference | `[RECOMMEND]` |
 
-通过 `-s` 参数可过滤最低级别：`cmate run rules.cmate -c config:app.json -s warning` 将只执行 `warning` 和 `error` 级别的规则。
+Use `-s` to filter minimum severity: `cmate run rules.cmate -c config:app.json -s warning` runs only `warning` and `error` rules.
 
-### 数据访问与表达式
+### Data Access & Expressions
 
 ```
-# 访问配置值（namespace::jsonpath 风格）
+# Access config values (namespace::jsonpath style)
 ${config::server.port}
 ${config::items[0].name}
 ${context::deploy_mode}
 
-# 比较运算: ==, !=, <, >, <=, >=, =~（正则匹配）, in
-# 逻辑运算: and, or, not
-# 算术运算: +, -, *, /, //, %, **
-# 内置函数: len(), int(), str(), range(), path_exists(), is_port_in_use() 等
+# Comparison: ==, !=, <, >, <=, >=, =~ (regex match), in
+# Logical: and, or, not
+# Arithmetic: +, -, *, /, //, %, **
+# Built-in functions: len(), int(), str(), range(), path_exists(), is_port_in_use(), etc.
 ```
 
-## CLI 参考
+## CLI Reference
 
 ```bash
-# 运行校验
-cmate run <rule_file> [选项]
-  -c, --configs   配置文件: '<名称>:<路径>[@<格式>]' 或 'env'
-  -C, --contexts  上下文变量: '<名称>:<值>'
-  -s, --severity  最低严重级别过滤: info | warning | error（默认 info）
-  -x, --fail-fast 遇到第一个失败立即停止
-  -v, --verbose   详细输出
-  -k, --lines     按行号筛选规则: '10,20,30'
-  -co, --collect-only  仅收集并列出规则，不执行
-  --output-path   JSON 结果文件输出目录
-  --env-script    环境变量脚本输出路径（默认 set_env.sh）
-  --no-env-script 禁用环境变量脚本生成
+# Run validation
+cmate run <rule_file> [options]
+  -c, --configs   Config files: '<name>:<path>[@<format>]' or 'env'
+  -C, --contexts  Context variables: '<name>:<value>'
+  -s, --severity  Minimum severity filter: info | warning | error (default: info)
+  -x, --fail-fast Stop on first failure
+  -v, --verbose   Verbose output
+  -k, --lines     Filter rules by line number: '10,20,30'
+  -co, --collect-only  List rules without executing
+  --output-path   Directory for JSON result output
 
-# 查看规则文件信息
-cmate inspect <rule_file> [选项]
-  -f, --format    输出格式: text | json（默认 text）
+# Inspect rule file
+cmate inspect <rule_file> [options]
+  -f, --format    Output format: text | json (default: text)
 ```
 
-## 项目结构
+## Project Structure
 
 ```
 cmate/
 ├── cmate/
-│   ├── cmate.py        # CLI 入口与核心调度
-│   ├── lexer.py        # 词法分析器
-│   ├── parser.py       # 语法分析器
-│   ├── _ast.py         # AST 节点定义
-│   ├── visitor.py      # AST 遍历与求值
-│   ├── _test.py        # 测试运行器（pytest 风格输出）
-│   ├── data_source.py  # 数据源管理（namespace::path 键值存储）
-│   ├── custom_fn.py    # 可扩展自定义函数
-│   └── util.py         # 工具函数
-├── presets/            # 预置规则文件示例
-├── tests/             # 单元测试
-└── pyproject.toml     # 项目配置
+│   ├── cmate.py        # CLI entry point and core orchestration
+│   ├── lexer.py        # Lexer (tokenizer)
+│   ├── parser.py       # Parser (grammar)
+│   ├── _ast.py         # AST node definitions
+│   ├── visitor.py      # AST traversal and evaluation
+│   ├── _test.py        # Test runner (pytest-style output)
+│   ├── data_source.py  # Data source (namespace::path key-value store)
+│   ├── custom_fn.py    # Extensible custom functions
+│   └── util.py         # Utilities
+├── presets/            # Preset rule file examples
+├── tests/             # Unit tests
+└── pyproject.toml     # Project configuration
 ```
 
-## 贡献
+## Contributing
 
-欢迎提交 Issue 和 Pull Request。
+Issues and Pull Requests are welcome.
 
 ```bash
-# 开发环境
+# Development setup
 git clone https://gitcode.com/AvadaKedavrua/cmate.git
 cd cmate
 pip install -e ".[dev]"
 
-# 运行测试
+# Run tests
 pytest tests/
 
-# 代码检查
+# Lint
 lintrunner -a
 ```
 
-## 许可证
+## License
 
-CMate 采用 [Mulan PSL v2](http://license.coscl.org.cn/MulanPSL2) 许可证。
+CMate is licensed under [Mulan PSL v2](http://license.coscl.org.cn/MulanPSL2).
 
 ```
 Copyright (c) 2025-2026 Huawei Technologies Co.,Ltd.
