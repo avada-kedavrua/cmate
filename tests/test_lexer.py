@@ -104,6 +104,8 @@ def test_tokenize_given_arithmetic_operators_when_tokenize_then_arithmetic_token
         ("elif", "ELIF"),
         ("else", "ELSE"),
         ("fi", "FI"),
+        ("assert", "ASSERT"),
+        ("alert", "ALERT"),
         ("error", "ERROR"),
         ("warning", "WARNING"),
         ("info", "INFO"),

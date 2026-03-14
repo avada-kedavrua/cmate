@@ -1,5 +1,6 @@
 import pytest
 from cmate._ast import (
+    Alert,
     Assign,
     BinOp,
     Call,
@@ -528,3 +529,148 @@ done
     for_node = partition.body[0]
     assert isinstance(for_node, For)
     assert for_node.target.id == "item"
+
+
+# ---------------------------------------------------------------------------
+# Tests for Reserved Partition Names
+# ---------------------------------------------------------------------------
+
+
+def test_partition_given_env_name_when_parse_then_raises_error(parser):
+    """Test that 'env' is a reserved keyword and cannot be used as partition name."""
+    text = """\
+[par env]
+assert true, 'test'
+"""
+    with pytest.raises(ParserError, match="reserved"):
+        parser.parse(text)
+
+
+# ---------------------------------------------------------------------------
+# Tests for Alert Statement
+# ---------------------------------------------------------------------------
+
+
+def test_parse_alert_basic(parser):
+    """Test parsing basic alert statement with default WARNING severity."""
+    text = """\
+[par config]
+alert ${some_field}, 'This field needs attention'
+"""
+    document_node = parser.parse(text)
+    partition = document_node.body[0]
+    alert_node = partition.body[0]
+
+    assert isinstance(alert_node, Alert)
+    assert alert_node.field.path == "some_field"
+    assert alert_node.msg == "This field needs attention"
+    assert alert_node.severity == Severity.WARNING  # default severity
+
+
+def test_parse_alert_with_info_severity(parser):
+    """Test parsing alert statement with INFO severity."""
+    text = """\
+[par config]
+alert ${config_value}, 'Info message', info
+"""
+    document_node = parser.parse(text)
+    partition = document_node.body[0]
+    alert_node = partition.body[0]
+
+    assert isinstance(alert_node, Alert)
+    assert alert_node.severity == Severity.INFO
+
+
+def test_parse_alert_with_warning_severity(parser):
+    """Test parsing alert statement with explicit WARNING severity."""
+    text = """\
+[par config]
+alert ${config_value}, 'Warning message', warning
+"""
+    document_node = parser.parse(text)
+    partition = document_node.body[0]
+    alert_node = partition.body[0]
+
+    assert isinstance(alert_node, Alert)
+    assert alert_node.severity == Severity.WARNING
+
+
+def test_parse_alert_with_error_severity(parser):
+    """Test parsing alert statement with ERROR severity."""
+    text = """\
+[par config]
+alert ${config_value}, 'Error message', error
+"""
+    document_node = parser.parse(text)
+    partition = document_node.body[0]
+    alert_node = partition.body[0]
+
+    assert isinstance(alert_node, Alert)
+    assert alert_node.severity == Severity.ERROR
+
+
+def test_parse_alert_with_namespaced_field(parser):
+    """Test parsing alert statement with namespaced dict path."""
+    text = """\
+[par config]
+alert ${other::nested.path}, 'Field from other namespace'
+"""
+    document_node = parser.parse(text)
+    partition = document_node.body[0]
+    alert_node = partition.body[0]
+
+    assert isinstance(alert_node, Alert)
+    assert alert_node.field.namespace == "other"
+    assert alert_node.field.path == "nested.path"
+
+
+def test_parse_alert_inside_if_block(parser):
+    """Test parsing alert statement inside conditional block."""
+    text = """\
+[par config]
+if ${flag}:
+    alert ${config_value}, 'Conditional alert'
+fi
+"""
+    document_node = parser.parse(text)
+    partition = document_node.body[0]
+    if_node = partition.body[0]
+
+    assert isinstance(if_node, If)
+    alert_node = if_node.body[0]
+    assert isinstance(alert_node, Alert)
+    assert alert_node.msg == "Conditional alert"
+
+
+def test_parse_alert_mixed_with_assert(parser):
+    """Test parsing alert statement mixed with assert statements."""
+    text = """\
+[par config]
+assert ${value} > 0, 'Value must be positive'
+alert ${other_value}, 'This value should be reviewed'
+assert ${another} == true, 'Must be true'
+"""
+    document_node = parser.parse(text)
+    partition = document_node.body[0]
+
+    assert len(partition.body) == 3
+    assert isinstance(partition.body[0], Rule)
+    assert isinstance(partition.body[1], Alert)
+    assert isinstance(partition.body[2], Rule)
+
+
+def test_parse_alert_inside_for_loop(parser):
+    """Test parsing alert statement inside for loop."""
+    text = """\
+[par config]
+for item in items:
+    alert ${item}, 'Check this item'
+done
+"""
+    document_node = parser.parse(text)
+    partition = document_node.body[0]
+    for_node = partition.body[0]
+
+    assert isinstance(for_node, For)
+    alert_node = for_node.body[0]
+    assert isinstance(alert_node, Alert)

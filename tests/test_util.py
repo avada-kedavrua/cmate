@@ -3,7 +3,7 @@ import json
 import pytest
 import yaml
 
-from cmate.util import _ext_to_type, func_timeout, get_cur_ip, load, Severity
+from cmate.util import _parse_format_from_path, func_timeout, get_cur_ip, load_from_file, Severity
 
 
 class TestSeverity:
@@ -48,32 +48,32 @@ class TestSeverity:
 
 
 class TestExtToType:
-    """Tests for _ext_to_type function"""
+    """Tests for _parse_format_from_path function"""
 
-    def test_ext_to_type_json(self):
+    def test_parse_format_from_path_json(self):
         """Test extracting json extension"""
-        assert _ext_to_type("config.json") == "json"
+        assert _parse_format_from_path("config.json") == "json"
 
-    def test_ext_to_type_yaml(self):
+    def test_parse_format_from_path_yaml(self):
         """Test extracting yaml extension"""
-        assert _ext_to_type("config.yaml") == "yaml"
+        assert _parse_format_from_path("config.yaml") == "yaml"
 
-    def test_ext_to_type_yml(self):
+    def test_parse_format_from_path_yml(self):
         """Test extracting yml extension"""
-        assert _ext_to_type("config.yml") == "yml"
+        assert _parse_format_from_path("config.yml") == "yml"
 
-    def test_ext_to_type_no_ext(self):
+    def test_parse_format_from_path_no_ext(self):
         """Test file without extension"""
-        assert _ext_to_type("config") == ""
+        assert _parse_format_from_path("config") == ""
 
-    def test_ext_to_type_uppercase(self):
+    def test_parse_format_from_path_uppercase(self):
         """Test uppercase extension conversion"""
-        assert _ext_to_type("config.JSON") == "json"
-        assert _ext_to_type("config.YAML") == "yaml"
+        assert _parse_format_from_path("config.JSON") == "json"
+        assert _parse_format_from_path("config.YAML") == "yaml"
 
-    def test_ext_to_type_multiple_dots(self):
+    def test_parse_format_from_path_multiple_dots(self):
         """Test file with multiple dots"""
-        assert _ext_to_type("config.test.json") == "json"
+        assert _parse_format_from_path("config.test.json") == "json"
 
 
 class TestLoad:
@@ -85,7 +85,7 @@ class TestLoad:
         test_data = {"key": "value", "number": 42}
         json_file.write_text(json.dumps(test_data))
 
-        result = load(str(json_file))
+        result = load_from_file(str(json_file))
         assert result == test_data
 
     def test_load_yaml_file(self, tmp_path):
@@ -94,7 +94,7 @@ class TestLoad:
         test_data = {"key": "value", "number": 42}
         yaml_file.write_text(yaml.dump(test_data))
 
-        result = load(str(yaml_file))
+        result = load_from_file(str(yaml_file))
         assert result == test_data
 
     def test_load_yml_file(self, tmp_path):
@@ -103,7 +103,7 @@ class TestLoad:
         test_data = {"key": "value"}
         yml_file.write_text(yaml.dump(test_data))
 
-        result = load(str(yml_file))
+        result = load_from_file(str(yml_file))
         assert result == test_data
 
     def test_load_with_explicit_parse_format(self, tmp_path):
@@ -112,7 +112,7 @@ class TestLoad:
         test_data = {"key": "value"}
         json_file.write_text(json.dumps(test_data))
 
-        result = load(str(json_file), parse_format="json")
+        result = load_from_file(str(json_file), parse_format="json")
         assert result == test_data
 
     def test_load_empty_yaml(self, tmp_path):
@@ -120,7 +120,7 @@ class TestLoad:
         yaml_file = tmp_path / "empty.yaml"
         yaml_file.write_text("")
 
-        result = load(str(yaml_file))
+        result = load_from_file(str(yaml_file))
         assert result is None
 
     def test_load_multi_document_yaml(self, tmp_path):
@@ -128,7 +128,7 @@ class TestLoad:
         yaml_file = tmp_path / "multi.yaml"
         yaml_file.write_text("doc1: value1\n---\ndoc2: value2\n")
 
-        result = load(str(yaml_file))
+        result = load_from_file(str(yaml_file))
         assert isinstance(result, list)
         assert len(result) == 2
 
@@ -138,14 +138,14 @@ class TestLoad:
         txt_file.write_text("content")
 
         with pytest.raises(TypeError, match="Unsupported parse type"):
-            load(str(txt_file))
+            load_from_file(str(txt_file))
 
     def test_load_nonexistent_file(self):
         """Test loading non-existent file"""
         # open_s from msguard validates path and raises InvalidParameterError
         # which is a subclass of Exception
         with pytest.raises(Exception):  # noqa: B017
-            load("/nonexistent/path/file.json")
+            load_from_file("/nonexistent/path/file.json")
 
 
 class TestGetCurIp:
@@ -219,12 +219,12 @@ class TestFuncTimeout:
         """Test loading YAML with empty list"""
         yaml_file = tmp_path / "empty_list.yaml"
         yaml_file.write_text("[]")
-        result = load(str(yaml_file))
+        result = load_from_file(str(yaml_file))
         assert result == []
 
     def test_load_yaml_nested_structure(self, tmp_path):
         """Test loading YAML with nested structure"""
         yaml_file = tmp_path / "nested.yaml"
         yaml_file.write_text("level1:\n  level2:\n    key: value\n")
-        result = load(str(yaml_file))
+        result = load_from_file(str(yaml_file))
         assert result == {"level1": {"level2": {"key": "value"}}}
