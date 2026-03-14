@@ -26,7 +26,6 @@ from ._ast import (
     Constant,
     Context,
     Continue,
-    Dependency,
     Desc,
     Dict,
     DictPath,
@@ -40,6 +39,7 @@ from ._ast import (
     Partition,
     Rule,
     Target,
+    Tuple,
     UnaryOp,
 )
 from .lexer import Lexer
@@ -80,8 +80,8 @@ class Parser:
         ("left", "OR"),
         ("left", "AND"),
         ("right", "NOT"),
-        ("nonassoc", "IN"),
-        ("nonassoc", "EQ", "NE", "LT", "LE", "GT", "GE", "RE"),
+        ("left", "IN"),
+        ("left", "EQ", "NE", "LT", "LE", "GT", "GE", "RE"),
         ("left", "ADD", "SUB"),
         ("left", "MUL", "TRUEDIV", "FLOORDIV", "MOD"),
         ("right", "POW"),
@@ -121,7 +121,6 @@ class Parser:
         """
         body : meta
              | global
-             | dependency
              | targets
              | contexts
              | partition
@@ -219,11 +218,37 @@ class Parser:
                 | expr RE expr
                 | expr IN expr
                 | expr NOT IN expr
+                | compare LT expr
+                | compare LE expr
+                | compare EQ expr
+                | compare NE expr
+                | compare GT expr
+                | compare GE expr
+                | compare RE expr
         """
-
-        op = "not in" if len(p) == 5 else p[2]
-        comparator = p[4] if len(p) == 5 else p[3]
-        p[0] = Compare(p[1].lineno, p[1].col_offset, p[1], op, comparator)
+        # Check if this is a NOT IN case
+        if len(p) == 5:
+            # expr NOT IN expr
+            op = "not in"
+            comparator = p[4]
+            p[0] = Compare(p[1].lineno, p[1].col_offset, p[1], [op], [comparator])
+        elif isinstance(p[1], Compare) and p[2] not in ("or", "and"):
+            # Chained comparison: compare OP expr
+            # Extend the existing Compare node
+            op = p[2]
+            comparator = p[3]
+            p[0] = Compare(
+                p[1].lineno,
+                p[1].col_offset,
+                p[1].left,
+                p[1].ops + [op],
+                p[1].comparators + [comparator],
+            )
+        else:
+            # Simple comparison or logical operator: expr OP expr
+            op = p[2]
+            comparator = p[3]
+            p[0] = Compare(p[1].lineno, p[1].col_offset, p[1], [op], [comparator])
 
     @staticmethod
     def p_call(p):
@@ -379,10 +404,19 @@ class Parser:
 
     @staticmethod
     def p_for_assign_stmt(p):
-        "for_assign_stmt : FOR name IN expr ':' assign_stmts DONE"
+        """
+        for_assign_stmt : FOR name IN expr ':' assign_stmts DONE
+                        | FOR name ',' name IN expr ':' assign_stmts DONE
+        """
 
         tok = p.slice[1]
-        p[0] = For(tok.lineno, tok.col_offset, p[2], p[4], p[6])
+        if len(p) == 8:
+            # Single variable: for x in expr
+            p[0] = For(tok.lineno, tok.col_offset, p[2], p[4], p[6])
+        else:
+            # Tuple unpacking: for x, y in expr
+            target = Tuple(p[2].lineno, p[2].col_offset, [p[2], p[4]])
+            p[0] = For(tok.lineno, tok.col_offset, target, p[6], p[8])
 
     @staticmethod
     def p_continue(p):
@@ -402,11 +436,6 @@ class Parser:
     def p_global(p):
         "global : '[' GLOBAL ']' assign_stmts END"
         p[0] = Global(p[4])
-
-    @staticmethod
-    def p_dependency(p):
-        "dependency : '[' DEPENDENCY ']' desc_stmts END"
-        p[0] = Dependency(p[4])
 
     @staticmethod
     def p_targets(p):
@@ -531,10 +560,19 @@ class Parser:
 
     @staticmethod
     def p_for_rule_stmt(p):
-        "for_rule_stmt : FOR name IN expr ':' rule_stmts DONE"
+        """
+        for_rule_stmt : FOR name IN expr ':' rule_stmts DONE
+                      | FOR name ',' name IN expr ':' rule_stmts DONE
+        """
 
         tok = p.slice[1]
-        p[0] = For(tok.lineno, tok.col_offset, p[2], p[4], p[6])
+        if len(p) == 8:
+            # Single variable: for x in expr
+            p[0] = For(tok.lineno, tok.col_offset, p[2], p[4], p[6])
+        else:
+            # Tuple unpacking: for x, y in expr
+            target = Tuple(p[2].lineno, p[2].col_offset, [p[2], p[4]])
+            p[0] = For(tok.lineno, tok.col_offset, target, p[6], p[8])
 
     def parse(self, text: str):
         iterator = self.lexer.tokenize(text)

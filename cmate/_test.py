@@ -19,8 +19,7 @@ import shutil
 import sys
 import time
 import unittest
-from dataclasses import dataclass
-from typing import Set, Tuple, List, Any, Union
+from typing import Any, List, Set, Tuple
 
 from colorama import Fore, Style
 
@@ -62,16 +61,23 @@ class RuleAssertionError(AssertionError):
                     recorded while walking the expression tree.
     """
 
-    def __init__(self, *args: object, severity: Severity, msg: str, test_expr: str, history: Tuple[Tuple[str, Any], ...]) -> None:
+    def __init__(
+        self,
+        *args: object,
+        severity: Severity,
+        msg: str,
+        test_expr: str,
+        history: Tuple[Tuple[str, Any], ...],
+    ) -> None:
         if not history:
             raise ValueError("History must not be empty")
 
-        super().__init__(*args)        
+        super().__init__(*args)
         self.severity = severity
         self.msg = msg
         self.test_expr = test_expr
         self.history = history
-    
+
     def build_err_msg(self) -> str:
         sev_color = self.severity.color_code
         lines = [
@@ -105,7 +111,15 @@ class AlertError(AssertionError):
         field_expr:  The alert's target field pre-formatted as a string.
         field_value: The field's runtime value; None on evaluation error.
     """
-    def __init__(self, *args: object, severity: Severity, msg: str, field_expr: str, history: Tuple[Tuple[str, Any], ...]) -> None:
+
+    def __init__(
+        self,
+        *args: object,
+        severity: Severity,
+        msg: str,
+        field_expr: str,
+        history: Tuple[Tuple[str, Any], ...],
+    ) -> None:
         if not history:
             raise ValueError("History must not be empty")
 
@@ -114,7 +128,7 @@ class AlertError(AssertionError):
         self.msg = msg
         self.field_expr = field_expr
         self.history = history
-    
+
     def build_err_msg(self) -> str:
         sev_color = self.severity.color_code
         lines = [
@@ -341,7 +355,9 @@ class RuleTestResult(unittest.TestResult):
 class RuleTestRunner:
     rescls = RuleTestResult
 
-    def __init__(self, stream=None, rescls=None, failfast=False, verbosity=False):
+    def __init__(
+        self, stream=None, rescls=None, failfast=False, verbosity=False, deselected=0
+    ):
         if stream is None:
             stream = sys.stderr
         self.stream = unittest.runner._WritelnDecorator(stream)
@@ -349,6 +365,7 @@ class RuleTestRunner:
             self.rescls = rescls
         self.verbosity = verbosity
         self.failfast = failfast
+        self.deselected = deselected
 
     def run(self, suite):
         total = suite.countTestCases()
@@ -359,15 +376,32 @@ class RuleTestRunner:
             failfast=self.failfast,
         )
         cols = shutil.get_terminal_size()[0]
-        self.stream.writeln(f"{Style.BRIGHT}collected {total} items{Style.RESET_ALL}")
+
+        # Print collection summary with deselected count if applicable
+        if self.deselected > 0:
+            self.stream.writeln(
+                f"{Style.BRIGHT}collected {total + self.deselected} items / "
+                f"{self.deselected} deselected / {total} selected{Style.RESET_ALL}"
+            )
+        else:
+            self.stream.writeln(
+                f"{Style.BRIGHT}collected {total} items{Style.RESET_ALL}"
+            )
 
         if total == 0:
             self.stream.writeln()
-            self.stream.writeln(
-                f"{Fore.YELLOW}"
-                + " no tests ran in 0.00s ".center(cols, "=")
-                + Fore.RESET
-            )
+            if self.deselected > 0:
+                self.stream.writeln(
+                    f"{Fore.YELLOW}"
+                    + f" {self.deselected} deselected in 0.00s ".center(cols, "=")
+                    + Fore.RESET
+                )
+            else:
+                self.stream.writeln(
+                    f"{Fore.YELLOW}"
+                    + " no tests ran in 0.00s ".center(cols, "=")
+                    + Fore.RESET
+                )
             self.stream.flush()
             return res
 
@@ -400,6 +434,9 @@ class RuleTestRunner:
         if alert_count:
             parts.append(f"{alert_count} alerts")
         parts.append(f"{passed} passed" if passed else "no passed")
+        # Add deselected count if applicable
+        if self.deselected > 0:
+            parts.append(f"{self.deselected} deselected")
         summary = f" {', '.join(parts)} in {elapsed:.3f}s "
         color = Fore.GREEN if passed == res.testsRun - alert_count else Fore.RED
         self.stream.writeln(f"{color}{summary.center(cols, '=')}{Fore.RESET}")

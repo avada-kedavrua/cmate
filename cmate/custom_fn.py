@@ -71,7 +71,7 @@ def is_port_in_use(port: int, host: str = "localhost", protocol: str = "tcp") ->
                 return True
 
 
-def images_exists(image_name: str) -> bool:
+def image_exists(image_name: str) -> bool:
     """Check if the image exists in the local docker
 
     Args:

@@ -4,7 +4,7 @@ import logging
 import operator
 import re
 from collections import defaultdict
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Set, Tuple
 
 from . import _ast, custom_fn
 from .data_source import DataSource
@@ -157,6 +157,9 @@ class _ExpressionEvaluator(NodeVisitor):
     def visit_list(self, node: _ast.List):
         return [self.visit(elt) for elt in node.elts]
 
+    def visit_tuple(self, node: _ast.Tuple):
+        return tuple(self.visit(elt) for elt in node.elts)
+
     def visit_dict(self, node: _ast.Dict):
         return dict(
             zip(
@@ -166,18 +169,54 @@ class _ExpressionEvaluator(NodeVisitor):
         )
 
     def visit_compare(self, node: _ast.Compare):
-        op = self._BINARY_OPS[node.op]
-        return op(self.visit(node.left), self.visit(node.comparator))
+        try:
+            # For single comparison with regex match, return the match object
+            if len(node.ops) == 1 and node.ops[0] == "=~":
+                op = self._BINARY_OPS["=~"]
+                return op(self.visit(node.left), self.visit(node.comparators[0]))
+
+            # For chained comparisons, evaluate left to right
+            left = self.visit(node.left)
+            for op_str, comparator_node in zip(node.ops, node.comparators):
+                right = self.visit(comparator_node)
+                op = self._BINARY_OPS[op_str]
+                if not op(left, right):
+                    return False
+                left = right
+            return True
+        except CMateError:
+            raise
+        except Exception as exc:
+            raise CMateError(
+                f"Error evaluating comparison at line {node.lineno}, "
+                f"column {node.col_offset}: {exc}"
+            ) from None
 
     def visit_binop(self, node: _ast.BinOp):
-        op = self._BINARY_OPS[node.op]
-        return op(self.visit(node.left), self.visit(node.right))
+        try:
+            op = self._BINARY_OPS[node.op]
+            return op(self.visit(node.left), self.visit(node.right))
+        except CMateError:
+            raise
+        except Exception as exc:
+            raise CMateError(
+                f"Error evaluating expression at line {node.lineno}, "
+                f"column {node.col_offset}: {exc}"
+            ) from None
 
     def visit_unaryop(self, node: _ast.UnaryOp):
-        op = self._UNARY_OPS.get(node.op)
-        if op is None:
-            raise CMateError(f"Unknown unary operator: {node.op!r}")
-        return op(self.visit(node.operand))
+        try:
+            op = self._UNARY_OPS.get(node.op)
+            if op is None:
+                raise CMateError(f"Unknown unary operator: {node.op!r}")
+            return op(self.visit(node.operand))
+        except CMateError:
+            raise
+        except Exception as exc:
+            raise CMateError(
+                f"Error evaluating unary operation at line {node.lineno}, "
+                f"column {node.col_offset}: {exc}"
+            ) from None
 
     def visit_call(self, node: _ast.Call):
         func = self._func_map.get(node.func.id)
@@ -187,7 +226,15 @@ class _ExpressionEvaluator(NodeVisitor):
                 f"column {node.col_offset}. "
                 "Add it to `custom_fn.py` to use it."
             )
-        return func(*(self.visit(a) for a in node.args))
+        try:
+            return func(*(self.visit(a) for a in node.args))
+        except CMateError:
+            raise
+        except Exception as exc:
+            raise CMateError(
+                f"Error calling function {node.func.id!r} at line {node.lineno}, "
+                f"column {node.col_offset}: {exc}"
+            ) from None
 
     # -- public entry point --------------------------------------------------
 
@@ -231,8 +278,19 @@ class _StatementExecutor(NodeVisitor):
 
     def visit_for(self, node: _ast.For):
         evaluator = self._make_evaluator()
-        loop_var = node.target.id
         iterable = evaluator.evaluate(node.it)
+
+        # Determine if this is a tuple unpacking case
+        is_tuple_unpack = isinstance(node.target, _ast.Tuple)
+
+        if is_tuple_unpack:
+            loop_vars = [n.id for n in node.target.elts]
+            expected_count = len(loop_vars)
+            # For dict iteration, we need to iterate over items
+            if isinstance(iterable, dict):
+                iterable = list(iterable.items())
+        else:
+            loop_var = node.target.id
 
         # For inline iterables store value temporarily under a generated key;
         # clean it up in a finally block so global scope is not polluted.
@@ -249,14 +307,51 @@ class _StatementExecutor(NodeVisitor):
 
         try:
             for i, item in enumerate(iterable):
-                item_ref = f"{ref_label}[{i}]"
-                self._loop_stack.append((loop_var, item_ref))
-                self._data_source.flatten("global", {loop_var: item})
+                if is_tuple_unpack:
+                    # Validate unpacking
+                    try:
+                        iter(item)
+                        item_list = list(item)
+                    except TypeError:
+                        item_type = type(item).__name__
+                        raise CMateError(
+                            f"cannot unpack non-iterable {item_type} object"
+                        )
 
-                self._exec_body(node.body)
+                    actual_count = len(item_list)
+                    if actual_count < expected_count:
+                        raise CMateError(
+                            f"not enough values to unpack "
+                            f"(expected {expected_count}, got {actual_count})"
+                        )
+                    if actual_count > expected_count:
+                        raise CMateError(
+                            f"too many values to unpack (expected {expected_count})"
+                        )
 
-                self._data_source.unflatten("global", {loop_var: item})
-                self._loop_stack.pop()
+                    # Create a dict for all loop variables
+                    loop_dict = dict(zip(loop_vars, item_list))
+                    item_ref = f"{ref_label}[{i}]"
+                    # Push all variables onto the loop stack
+                    for var in loop_vars:
+                        self._loop_stack.append((var, f"{item_ref}.{var}"))
+                    self._data_source.flatten("global", loop_dict)
+
+                    self._exec_body(node.body)
+
+                    self._data_source.unflatten("global", loop_dict)
+                    # Pop all variables from the loop stack
+                    for _ in loop_vars:
+                        self._loop_stack.pop()
+                else:
+                    item_ref = f"{ref_label}[{i}]"
+                    self._loop_stack.append((loop_var, item_ref))
+                    self._data_source.flatten("global", {loop_var: item})
+
+                    self._exec_body(node.body)
+
+                    self._data_source.unflatten("global", {loop_var: item})
+                    self._loop_stack.pop()
 
                 if self._break:
                     self._break = False
@@ -356,7 +451,10 @@ class AssignmentProcessor(_StatementExecutor):
     def visit_meta(self, node):
         pass
 
-    def visit_dependency(self, node):
+    def visit_target(self, node):
+        pass
+
+    def visit_context(self, node):
         pass
 
     def visit_partition(self, node):
@@ -448,7 +546,10 @@ class RuleCollector(_StatementExecutor):
     def visit_meta(self, node):
         pass
 
-    def visit_dependency(self, node):
+    def visit_target(self, node):
+        pass
+
+    def visit_context(self, node):
         pass
 
     def visit_global(self, node):
@@ -480,19 +581,16 @@ class RuleCollector(_StatementExecutor):
 
 class InfoCollector(NodeVisitor):
     """
-    Collects metadata, target/dependency declarations, context definitions,
+    Collects metadata, target declarations, context definitions,
     and partition requirements without executing any expressions.
 
-    Supports both:
-    - New syntax: [target] for config files, [context] for context variables
-    - Legacy syntax: [dependency] for both (backward compatibility)
+    syntax: [target] for config files, [context] for context variables
     """
 
     def __init__(self):
         self._metadata_map: Dict = {}
-        self._dependency_map: Dict = {}  # Legacy [dependency] section
-        self._target_map: Dict = {}  # New [target] section
-        self._context_def_map: Dict = {}  # New [context] section definitions
+        self._target_map: Dict = {}
+        self._context_def_map: Dict = {}
         self._partition_map: Dict = {}
         self._context_map: Dict[str, set] = defaultdict(set)  # Inferred options
         self._namespace: Optional[str] = None
@@ -502,21 +600,6 @@ class InfoCollector(NodeVisitor):
             raise CMateError("Multiple [metadata] sections not allowed.")
         for assign in node.body:
             self._metadata_map[assign.target.id] = self._literal_value(assign.value)
-
-    def visit_dependency(self, node: _ast.Dependency):
-        """Handle legacy [dependency] section (backward compatibility)."""
-        if self._dependency_map:
-            raise CMateError("Multiple [dependency] sections not allowed.")
-        for desc in node.body:
-            name = desc.target.id
-            if name in self._dependency_map:
-                logger.warning(
-                    "Dependency %r redefined at line %d, column %d.",
-                    name,
-                    desc.lineno,
-                    desc.col_offset,
-                )
-            self._dependency_map[name] = (desc.desc, desc.parse_format)
 
     def visit_target(self, node: _ast.Target):
         """Handle new [targets] section for config file definitions."""
@@ -560,8 +643,8 @@ class InfoCollector(NodeVisitor):
 
     def visit_partition(self, node: _ast.Partition):
         self._namespace = node.target.id
-        required_targets = set()  # type: set[str]
-        required_contexts = set()  # type: set[str]
+        required_targets: Set[str] = set()
+        required_contexts: Set[str] = set()
 
         if self._namespace in self._partition_map:
             logger.warning(
@@ -571,29 +654,23 @@ class InfoCollector(NodeVisitor):
         for stmt in node.body:
             self._collect_deps(stmt, required_targets, required_contexts)
 
-        # Validate partition is declared in [targets], [dependency], or is 'env'
+        # Validate partition is declared in [targets] or is 'env'
         if self._namespace != "env":
-            # Check new [targets] section first, then legacy [dependency]
-            if self._target_map:
-                if self._namespace not in self._target_map:
-                    raise CMateError(
-                        f"Partition {self._namespace!r} must be declared in [targets] section."
-                    )
-            elif self._dependency_map:
-                if self._namespace not in self._dependency_map:
-                    raise CMateError(
-                        f"Partition {self._namespace!r} must be declared in [dependency] section."
-                    )
-            else:
+            if not self._target_map:
                 raise CMateError(
-                    f"Partition {self._namespace!r} requires a [targets] or [dependency] section."
+                    f"Partition {self._namespace!r} requires a [targets] section."
                 )
 
-        # Get description and parse format from [target] or [dependency]
+            if self._namespace not in self._target_map:
+                raise CMateError(
+                    f"Partition {self._namespace!r} must be declared in [targets] section."
+                )
+
+        # Get description and parse format from [target]
+        desc = None
+        parse_format = None
         if self._target_map and self._namespace in self._target_map:
             desc, parse_format = self._target_map[self._namespace]
-        else:
-            desc, parse_format = self._dependency_map.get(self._namespace, (None, None))
 
         self._partition_map[self._namespace] = {
             "desc": desc,
@@ -604,33 +681,25 @@ class InfoCollector(NodeVisitor):
         self._namespace = None
 
     def collect(self, node: _ast.Document) -> Dict[str, Dict[str, Dict[str, Any]]]:
-        """Collect metadata, target/dependency declarations, and partition requirements."""
+        """Collect metadata, target declarations, and partition requirements."""
         try:
             self.visit(node)
         except Exception as exc:
             raise CMateError(f"Configuration parsing failed: {exc}") from exc
 
         # Validate that all context:: references are defined in [contexts] section
-        # (only if [contexts] section exists)
-        if self._context_def_map:
-            for var in self._context_map.keys():
-                if var not in self._context_def_map:
-                    raise CMateError(
-                        f"Context variable {var!r} is used in rules but not declared "
-                        "in [contexts] section."
-                    )
+        for var in self._context_map.keys():
+            if var not in self._context_def_map:
+                raise CMateError(
+                    f"Context variable {var!r} is used in rules but not declared "
+                    "in [contexts] section."
+                )
 
-        # Build contexts from either [context] section or [dependency] (legacy)
         contexts = {}
         for var, opts in self._context_map.items():
+            desc = None
             if self._context_def_map:
-                # New syntax: get description from [context] section
                 desc = self._context_def_map.get(var)
-            else:
-                # Legacy syntax: get description from [dependency] section
-                desc = self._dependency_map.get(var)
-                if isinstance(desc, tuple):
-                    desc = desc[0]  # (desc, parse_format) -> desc
             contexts[var] = {"desc": desc, "options": sorted(opts)}
 
         return {
@@ -642,51 +711,53 @@ class InfoCollector(NodeVisitor):
     # -- helpers -------------------------------------------------------------
 
     def _collect_deps(self, node, targets: set, contexts: set):
-        """Recursively walk *node* collecting namespace references."""
-        if isinstance(node, _ast.DictPath):
-            ns = node.namespace
-            if ns is None or ns in {"global", "env"}:
-                return
-            # Determine the valid namespaces based on which section is used
-            valid_namespaces = set()
-            if self._target_map:
-                valid_namespaces.update(self._target_map.keys())
-            if self._dependency_map:
-                valid_namespaces.update(self._dependency_map.keys())
-            valid_namespaces.add("context")
+        """Walk *node* collecting namespace references using _iter_nodes()."""
+        for child in _iter_nodes(node):
+            # Collect context:: and target references from DictPath nodes
+            if isinstance(child, _ast.DictPath):
+                ns = child.namespace
+                if ns is None or ns in {"global", "env"}:
+                    continue
+                # Determine the valid namespaces based on which section is used
+                valid_namespaces = set()
+                if self._target_map:
+                    valid_namespaces.update(self._target_map.keys())
+                valid_namespaces.add("context")
 
-            if ns not in valid_namespaces:
-                logger.warning(
-                    "Undefined namespace %r at line %d, column %d.",
-                    ns,
-                    node.lineno,
-                    node.col_offset,
-                )
-            if ns == "context":
-                contexts.add(node.path)
-            else:
-                targets.add(ns)
-            return
+                if ns not in valid_namespaces:
+                    logger.warning(
+                        "Undefined namespace %r at line %d, column %d.",
+                        ns,
+                        child.lineno,
+                        child.col_offset,
+                    )
+                if ns == "context":
+                    contexts.add(child.path)
+                    # Ensure context is tracked in _context_map for validation
+                    # (defaultdict will create empty set if not exists)
+                    _ = self._context_map[child.path]
+                else:
+                    targets.add(ns)
 
-        # Detect 'context::var == <literal>' to populate context option sets
-        if (
-            isinstance(node, _ast.Compare)
-            and isinstance(node.left, _ast.DictPath)
-            and node.left.namespace == "context"
-            and isinstance(node.comparator, _ast.Constant)
-        ):
-            self._context_map[node.left.path].add(node.comparator.value)
-
-        # Recurse into child nodes
-        if hasattr(node, "__slots__"):
-            for attr in node.__slots__:
-                child = getattr(node, attr, None)
-                if isinstance(child, _ast.Node):
-                    self._collect_deps(child, targets, contexts)
-                elif isinstance(child, list):
-                    for item in child:
-                        if isinstance(item, _ast.Node):
-                            self._collect_deps(item, targets, contexts)
+            # Detect 'context::var == <literal>' or '<literal> == context::var'
+            # to populate context option sets for auto-detection
+            elif isinstance(child, _ast.Compare) and len(child.comparators) > 0:
+                left = child.left
+                first_comp = child.comparators[0]
+                # Pattern: context::var == <literal>
+                if (
+                    isinstance(left, _ast.DictPath)
+                    and left.namespace == "context"
+                    and isinstance(first_comp, _ast.Constant)
+                ):
+                    self._context_map[left.path].add(first_comp.value)
+                # Pattern: <literal> == context::var (reversed)
+                elif (
+                    isinstance(first_comp, _ast.DictPath)
+                    and first_comp.namespace == "context"
+                    and isinstance(left, _ast.Constant)
+                ):
+                    self._context_map[first_comp.path].add(left.value)
 
     @staticmethod
     def _literal_value(node):
@@ -727,6 +798,9 @@ class ASTFormatter(NodeVisitor):
     def visit_list(self, node: _ast.List):
         return [self.visit(e) for e in node.elts]
 
+    def visit_tuple(self, node: _ast.Tuple):
+        return tuple(self.visit(e) for e in node.elts)
+
     def visit_dict(self, node: _ast.Dict):
         return dict(
             zip(
@@ -736,7 +810,11 @@ class ASTFormatter(NodeVisitor):
         )
 
     def visit_compare(self, node: _ast.Compare):
-        return f"{self.visit(node.left)} {node.op} {self.visit(node.comparator)}"
+        parts = [str(self.visit(node.left))]
+        for op, comp in zip(node.ops, node.comparators):
+            parts.append(op)
+            parts.append(str(self.visit(comp)))
+        return " ".join(parts)
 
     def visit_binop(self, node: _ast.BinOp):
         return f"{self.visit(node.left)} {node.op} {self.visit(node.right)}"

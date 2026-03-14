@@ -57,10 +57,6 @@ class Global(Mod):
     pass
 
 
-class Dependency(Mod):
-    pass
-
-
 class Target(Mod):
     """Section for defining validation targets (config files)."""
 
@@ -183,13 +179,13 @@ class BinOp(Expr):
 
 
 class Compare(Expr):
-    __slots__ = ("left", "op", "comparator")
+    __slots__ = ("left", "ops", "comparators")
 
-    def __init__(self, lineno, col_offset, left, op, comparator):
+    def __init__(self, lineno, col_offset, left, ops, comparators):
         super().__init__(lineno, col_offset)
         self.left = left
-        self.op = op
-        self.comparator = comparator
+        self.ops = ops  # List[str] - comparison operators
+        self.comparators = comparators  # List[Expr] - right-hand side expressions
 
 
 class Call(Expr):
@@ -229,6 +225,16 @@ class List(Expr):
     def __init__(self, lineno, col_offset, elts):
         super().__init__(lineno, col_offset)
         self.elts = elts
+
+
+class Tuple(Expr):
+    """Tuple expression for unpacking in for loops (e.g., for x, y in items)."""
+
+    __slots__ = ("elts",)
+
+    def __init__(self, lineno, col_offset, elts):
+        super().__init__(lineno, col_offset)
+        self.elts = elts  # List[Name]
 
 
 class Dict(Expr):

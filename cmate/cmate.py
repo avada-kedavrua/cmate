@@ -145,6 +145,30 @@ def _parse_contexts(contexts: Optional[List[str]]) -> Dict[str, Any]:
     return result
 
 
+def _parse_lines(lines: Optional[str]) -> Optional[set]:
+    """
+    Parse '-k' argument of comma-separated line numbers.
+
+    Args:
+        lines: Comma-separated line numbers string (e.g., '10,20,30').
+
+    Returns:
+        Set of line numbers to filter, or None if no filter specified.
+    """
+    if not lines:
+        return None
+
+    result = set()
+    for part in lines.split(","):
+        part = part.strip()
+        if part:
+            try:
+                result.add(int(part))
+            except ValueError:
+                logger.warning("Invalid line number %r – skipped.", part)
+    return result if result else None
+
+
 # ---------------------------------------------------------------------------
 # Dependency validation and data loading
 # ---------------------------------------------------------------------------
@@ -261,6 +285,7 @@ def _format_missing(
     parts = []
     for target, m in missing.items():
         parts.append(f"Target {target!r} is missing required dependencies:")
+
         for t in m["targets"]:
             desc = all_targets.get(t, {}).get("desc") or "No description available."
             parts.append(f"  - {t}: {desc}")
@@ -272,7 +297,7 @@ def _format_missing(
                 desc = raw[0]
             else:
                 desc = raw or "No description."
-            opts = ctx.get("options", [])
+            opts = ctx.get("options", []) or "No options available."
             parts.append(f"  - {c}: {opts}")
             parts.append(f"      {desc}")
         parts.append("")
@@ -428,6 +453,7 @@ def run(
     collect_only: bool = False,
     output_path: Optional[Path] = None,
     severity: str = "info",
+    lines: Optional[str] = None,
 ) -> int:
     """Validate configurations against rules defined in a cmate rule file.
 
@@ -443,6 +469,7 @@ def run(
     """
     parsed_configs = _parse_configs(configs)
     parsed_contexts = _parse_contexts(contexts)
+    line_filter = _parse_lines(lines)
 
     node = parse(rule_path)
     info = InfoCollector().collect(node)
@@ -459,14 +486,67 @@ def run(
             "in dependencies or the partition section."
         ) from e
 
+    # Apply line filter if specified
+    total_rules = sum(len(rules) for rules in ruleset.values())
+    if line_filter is not None:
+        filtered_ruleset, deselected = _filter_rules_by_lines(ruleset, line_filter)
+    else:
+        filtered_ruleset = ruleset
+        deselected = 0
+
     if collect_only:
-        return _show_collected(ruleset)
+        return _show_collected(filtered_ruleset, total_rules, deselected)
 
-    return _execute(ruleset, data_source, failfast, verbosity, output_path)
+    return _execute(
+        filtered_ruleset, data_source, failfast, verbosity, output_path, deselected
+    )
 
 
-def _show_collected(ruleset: Dict[str, List[_ast.Rule]]) -> int:
+def _filter_rules_by_lines(
+    ruleset: Dict[str, set], line_filter: set
+) -> Tuple[Dict[str, set], int]:
+    """Filter rules by line numbers.
+
+    Args:
+        ruleset: Dictionary mapping namespace to set of rule nodes.
+        line_filter: Set of line numbers to include.
+
+    Returns:
+        Tuple of (filtered ruleset, deselected count).
+    """
+    filtered = {}
+    deselected = 0
+
+    for ns, rules in ruleset.items():
+        selected = set()
+        for rule in rules:
+            if rule.lineno in line_filter:
+                selected.add(rule)
+            else:
+                deselected += 1
+        if selected:
+            filtered[ns] = selected
+
+    return filtered, deselected
+
+
+def _show_collected(
+    ruleset: Dict[str, List[_ast.Rule]], total: int = 0, deselected: int = 0
+) -> int:
     formatter = ASTFormatter()
+    selected = sum(len(rules) for rules in ruleset.values())
+
+    # Print pytest-style collection summary
+    if deselected > 0:
+        print(
+            f"collected {total} items / {deselected} deselected / {selected} selected"
+        )
+        if selected == 0:
+            print(f"\n{'=' * 60} {deselected} deselected {'=' * 60}")
+            return 0
+    else:
+        print(f"collected {total} items")
+
     lines = []
     for ns, rules in ruleset.items():
         lines.append(f"<Target {ns}>")
@@ -482,8 +562,11 @@ def _execute(
     failfast: bool,
     verbosity: bool,
     output_path: Optional[Path],
+    deselected: int = 0,
 ) -> int:
-    runner = RuleTestRunner(failfast=failfast, verbosity=verbosity)
+    runner = RuleTestRunner(
+        failfast=failfast, verbosity=verbosity, deselected=deselected
+    )
     result_log: dict = {}
     suite = make_test_suite(data_source, ruleset, result_log)
     result = runner.run(suite)
@@ -567,6 +650,12 @@ def main(args: Optional[List[str]] = None) -> int:
         default="info",
         help="Minimum severity to execute (default: info)",
     )
+    run_parser.add_argument(
+        "-k",
+        "--lines",
+        type=str,
+        help="Comma-separated line numbers to run (e.g., '10,20,30')",
+    )
 
     # -- inspect -------------------------------------------------------------
     inspect_parser = subparsers.add_parser(
@@ -611,6 +700,7 @@ def main(args: Optional[List[str]] = None) -> int:
             parsed.collect_only,
             parsed.output_path,
             parsed.severity,
+            parsed.lines,
         )
     except (OSError, ValueError, ParseFormatError, CmateError):
         logger.exception("Error during run")

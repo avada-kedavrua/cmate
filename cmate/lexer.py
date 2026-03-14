@@ -28,7 +28,6 @@ class LexerError(Exception):
 class Lexer:
     headers = {
         "metadata": "METADATA",
-        "dependency": "DEPENDENCY",  # Keep for backward compatibility
         "targets": "TARGETS",
         "contexts": "CONTEXTS",
         "par": "PAR",
