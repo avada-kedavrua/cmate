@@ -6,7 +6,6 @@ from cmate._ast import (
     Call,
     Compare,
     Constant,
-    Dependency,
     Dict,
     Document,
     For,
@@ -17,6 +16,8 @@ from cmate._ast import (
     Name,
     Partition,
     Rule,
+    Target,
+    Tuple,
     UnaryOp,
 )
 
@@ -109,7 +110,7 @@ def test_parse_comparison_operations(parser, op, expected_op):
     result = parser.parse("[global]\n" + text + "\n---")
     assign = result.body[0].body[0]
     assert isinstance(assign.value, Compare)
-    assert assign.value.op == expected_op
+    assert assign.value.ops == [expected_op]
 
 
 def test_parse_unary_operations(parser):
@@ -209,7 +210,7 @@ def test_parse_continue_break(parser):
     assert isinstance(for_stmt, For)
     assert for_stmt.target.id == "x"
     assert isinstance(if_stmt, If)
-    assert if_stmt.test.comparator.value == 10
+    assert if_stmt.test.comparators[0].value == 10
 
 
 # 规则相关测试
@@ -265,14 +266,14 @@ def test_parse_partition_section(parser):
 def test_parse_dependency_section(parser):
     """测试依赖关系段解析"""
     text = """
-    [dependency]
+    [targets]
     source: 'table1'
     target: 'table2@csv'
     ---
     """
     result = parser.parse(text)
     dependency = result.body[0]
-    assert isinstance(dependency, Dependency)
+    assert isinstance(dependency, Target)
     assert len(dependency.body) == 2
 
 
@@ -303,7 +304,7 @@ def test_parse_complex_expression(parser):
     assert isinstance(assign, Assign)
     assert isinstance(assign.value, Compare)
     assert isinstance(assign.value.left, BinOp)
-    assert isinstance(assign.value.comparator, UnaryOp)
+    assert isinstance(assign.value.comparators[0], UnaryOp)
 
 
 def test_token_stream_iteration():
@@ -675,3 +676,121 @@ done
     assert isinstance(for_node, For)
     alert_node = for_node.body[0]
     assert isinstance(alert_node, Alert)
+
+
+# ---------------------------------------------------------------------------
+# Tests for Tuple Unpacking in For Loops
+# ---------------------------------------------------------------------------
+
+
+def test_parse_for_tuple_unpack_given_two_vars_when_parsed_then_returns_tuple_target(
+    parser,
+):
+    """Tuple unpacking for k, v in dict should create Tuple target."""
+    text = """\
+[global]
+for k, v in items:
+    result = k
+done
+---
+"""
+    document_node = parser.parse(text)
+    global_node = document_node.body[0]
+    for_node = global_node.body[0]
+
+    assert isinstance(for_node, For)
+    assert isinstance(for_node.target, Tuple)
+    assert len(for_node.target.elts) == 2
+    assert for_node.target.elts[0].id == "k"
+    assert for_node.target.elts[1].id == "v"
+
+
+def test_parse_for_tuple_unpack_in_rule_section(parser):
+    """Tuple unpacking should work in rule section."""
+    text = """\
+[par config]
+for key, value in data:
+    assert ${key} == ${value}, 'key equals value'
+done
+"""
+    document_node = parser.parse(text)
+    partition = document_node.body[0]
+    for_node = partition.body[0]
+
+    assert isinstance(for_node, For)
+    assert isinstance(for_node.target, Tuple)
+    assert for_node.target.elts[0].id == "key"
+    assert for_node.target.elts[1].id == "value"
+
+
+def test_parse_for_single_var_still_works(parser):
+    """Single variable for loop should still work after tuple support."""
+    text = """\
+[global]
+for item in items:
+    result = item
+done
+---
+"""
+    document_node = parser.parse(text)
+    global_node = document_node.body[0]
+    for_node = global_node.body[0]
+
+    assert isinstance(for_node, For)
+    assert isinstance(for_node.target, Name)
+    assert for_node.target.id == "item"
+
+
+# ---------------------------------------------------------------------------
+# Tests for Chained Comparisons
+# ---------------------------------------------------------------------------
+
+
+def test_parse_chained_comparison_given_two_ops_when_parsed_then_returns_compare_with_list(
+    parser,
+):
+    """Chained comparison 1 <= x <= 10 should create Compare with multiple ops."""
+    text = """\
+[global]
+a = 1 <= 5 <= 10
+---
+"""
+    document_node = parser.parse(text)
+    global_node = document_node.body[0]
+    assign_node = global_node.body[0]
+
+    assert isinstance(assign_node.value, Compare)
+    assert assign_node.value.ops == ["<=", "<="]
+    assert len(assign_node.value.comparators) == 2
+
+
+def test_parse_chained_equality_comparison(parser):
+    """Chained equality a == b == c should create Compare with multiple ops."""
+    text = """\
+[global]
+a = 1 == 1 == 1
+---
+"""
+    document_node = parser.parse(text)
+    global_node = document_node.body[0]
+    assign_node = global_node.body[0]
+
+    assert isinstance(assign_node.value, Compare)
+    assert assign_node.value.ops == ["==", "=="]
+    assert len(assign_node.value.comparators) == 2
+
+
+def test_parse_single_comparison_backward_compatible(parser):
+    """Single comparison should still work with new structure."""
+    text = """\
+[global]
+a = 5 < 10
+---
+"""
+    document_node = parser.parse(text)
+    global_node = document_node.body[0]
+    assign_node = global_node.body[0]
+
+    assert isinstance(assign_node.value, Compare)
+    assert assign_node.value.ops == ["<"]
+    assert len(assign_node.value.comparators) == 1

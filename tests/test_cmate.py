@@ -53,6 +53,56 @@ class TestParseConfigs:
             cmate._parse_configs(["invalid_config"])
 
 
+class TestParseLines:
+    """Tests for _parse_lines function"""
+
+    def test_parse_lines_none(self):
+        """Test parsing None returns None"""
+        result = cmate._parse_lines(None)
+        assert result is None
+
+    def test_parse_lines_empty_string(self):
+        """Test parsing empty string returns None"""
+        result = cmate._parse_lines("")
+        assert result is None
+
+    def test_parse_lines_single(self):
+        """Test parsing single line number"""
+        result = cmate._parse_lines("10")
+        assert result == {10}
+
+    def test_parse_lines_multiple(self):
+        """Test parsing multiple line numbers"""
+        result = cmate._parse_lines("10,20,30")
+        assert result == {10, 20, 30}
+
+    def test_parse_lines_with_spaces(self):
+        """Test parsing line numbers with spaces"""
+        result = cmate._parse_lines("10 , 20 , 30")
+        assert result == {10, 20, 30}
+
+    def test_parse_lines_invalid_skipped(self, caplog):
+        """Test parsing invalid line numbers are skipped with warning"""
+        import logging
+
+        cmate.logger.setLevel(logging.WARNING)
+        result = cmate._parse_lines("10,abc,30")
+        assert result == {10, 30}
+
+    def test_parse_lines_all_invalid_returns_none(self, caplog):
+        """Test parsing all invalid line numbers returns None"""
+        import logging
+
+        cmate.logger.setLevel(logging.WARNING)
+        result = cmate._parse_lines("abc,def")
+        assert result is None
+
+    def test_parse_lines_duplicates(self):
+        """Test parsing duplicate line numbers"""
+        result = cmate._parse_lines("10,10,20")
+        assert result == {10, 20}
+
+
 class TestParseContexts:
     """Tests for _parse_contexts function"""
 
@@ -234,6 +284,68 @@ class TestValidateAndLoadContexts:
         # Should log warning but not raise
 
 
+class TestFilterRulesByLines:
+    """Tests for _filter_rules_by_lines function"""
+
+    def test_filter_empty_ruleset(self):
+        """Test filtering empty ruleset"""
+        filtered, deselected = cmate._filter_rules_by_lines({}, {10, 20})
+        assert filtered == {}
+        assert deselected == 0
+
+    def test_filter_single_rule_match(self):
+        """Test filtering with single matching rule"""
+        const = Constant(10, 1, True)
+        rule = Rule(10, 1, const, "test", Severity.ERROR)
+        ruleset = {"ns": {rule}}
+
+        filtered, deselected = cmate._filter_rules_by_lines(ruleset, {10})
+        assert len(filtered["ns"]) == 1
+        assert deselected == 0
+
+    def test_filter_single_rule_no_match(self):
+        """Test filtering with no matching rules"""
+        const = Constant(10, 1, True)
+        rule = Rule(10, 1, const, "test", Severity.ERROR)
+        ruleset = {"ns": {rule}}
+
+        filtered, deselected = cmate._filter_rules_by_lines(ruleset, {999})
+        assert filtered == {}
+        assert deselected == 1
+
+    def test_filter_multiple_rules_partial_match(self):
+        """Test filtering with partial match"""
+        rule1 = Rule(10, 1, Constant(10, 1, True), "test1", Severity.ERROR)
+        rule2 = Rule(20, 1, Constant(20, 1, True), "test2", Severity.ERROR)
+        rule3 = Rule(30, 1, Constant(30, 1, True), "test3", Severity.ERROR)
+        ruleset = {"ns": {rule1, rule2, rule3}}
+
+        filtered, deselected = cmate._filter_rules_by_lines(ruleset, {10, 30})
+        assert len(filtered["ns"]) == 2
+        assert deselected == 1
+
+    def test_filter_multiple_namespaces(self):
+        """Test filtering with multiple namespaces"""
+        rule1 = Rule(10, 1, Constant(10, 1, True), "test1", Severity.ERROR)
+        rule2 = Rule(20, 1, Constant(20, 1, True), "test2", Severity.ERROR)
+        ruleset = {"ns1": {rule1}, "ns2": {rule2}}
+
+        filtered, deselected = cmate._filter_rules_by_lines(ruleset, {10})
+        assert "ns1" in filtered
+        assert "ns2" not in filtered
+        assert deselected == 1
+
+    def test_filter_removes_empty_namespaces(self):
+        """Test filtering removes namespaces with no selected rules"""
+        rule1 = Rule(10, 1, Constant(10, 1, True), "test1", Severity.ERROR)
+        rule2 = Rule(20, 1, Constant(20, 1, True), "test2", Severity.ERROR)
+        ruleset = {"ns1": {rule1}, "ns2": {rule2}}
+
+        filtered, deselected = cmate._filter_rules_by_lines(ruleset, {999})
+        assert filtered == {}
+        assert deselected == 2
+
+
 class TestCollectOnly:
     """Tests for _show_collected function"""
 
@@ -256,6 +368,28 @@ class TestCollectOnly:
 
         result = cmate._show_collected(ruleset)
         assert result == 0
+
+    def test_collect_only_with_deselected(self, capsys):
+        """Test collect only with deselected count"""
+        const = Constant(1, 1, True)
+        rule = Rule(1, 1, const, "test", Severity.ERROR)
+        ruleset = {"ns": {rule}}
+
+        result = cmate._show_collected(ruleset, total=10, deselected=9)
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "10 items" in captured.out
+        assert "9 deselected" in captured.out
+        assert "1 selected" in captured.out
+
+    def test_collect_only_all_deselected(self, capsys):
+        """Test collect only when all items are deselected"""
+        result = cmate._show_collected({}, total=10, deselected=10)
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "10 items" in captured.out
+        assert "10 deselected" in captured.out
+        assert "0 selected" in captured.out
 
 
 class TestNAEncoder:
@@ -385,7 +519,7 @@ class TestRun:
         """Test run function"""
         rule_file = tmp_path / "rule.cmate"
         rule_file.write_text(
-            "[dependency]\ntest: 'Test config'\n---\n[par test]\nassert true, 'test'\n"
+            "[targets]\ntest: 'Test config'\n---\n[par test]\nassert true, 'test'\n"
         )
         config_file = tmp_path / "config.json"
         config_file.write_text('{"key": 1}')
@@ -397,7 +531,7 @@ class TestRun:
         """Test run when validation fails"""
         rule_file = tmp_path / "rule.cmate"
         rule_file.write_text(
-            "[dependency]\ntest: 'Test config'\n---\n[par test]\nassert true, 'test'\n"
+            "[targets]\ntest: 'Test config'\n---\n[par test]\nassert true, 'test'\n"
         )
         with pytest.raises(cmate.ValidationError):
             cmate.run(str(rule_file), configs=[])
@@ -406,7 +540,7 @@ class TestRun:
         """Test run with collect_only flag"""
         rule_file = tmp_path / "rule.cmate"
         rule_file.write_text(
-            "[dependency]\ntest: 'Test config'\n---\n[par test]\nassert true, 'test'\n"
+            "[targets]\ntest: 'Test config'\n---\n[par test]\nassert true, 'test'\n"
         )
         config_file = tmp_path / "config.json"
         config_file.write_text('{"key": 1}')
@@ -417,6 +551,59 @@ class TestRun:
             collect_only=True,
         )
         assert result == 0
+
+    def test_run_with_lines_filter(self, tmp_path):
+        """Test run with -k lines filter"""
+        rule_file = tmp_path / "rule.cmate"
+        # Line numbers: line 1 is header, line 2 is separator, line 3 is [par test], line 4 is assert
+        rule_file.write_text(
+            "[targets]\ntest: 'Test config'\n---\n[par test]\nassert true, 'test'\n"
+        )
+        config_file = tmp_path / "config.json"
+        config_file.write_text('{"key": 1}')
+
+        result = cmate.run(
+            str(rule_file),
+            configs=[f"test:{config_file}"],
+            lines="5",  # Line 5 is the assert line
+        )
+        assert isinstance(result, int)
+
+    def test_run_with_lines_filter_nonexistent(self, tmp_path, capsys):
+        """Test run with -k filter for non-existent line"""
+        rule_file = tmp_path / "rule.cmate"
+        rule_file.write_text(
+            "[targets]\ntest: 'Test config'\n---\n[par test]\nassert true, 'test'\n"
+        )
+        config_file = tmp_path / "config.json"
+        config_file.write_text('{"key": 1}')
+
+        result = cmate.run(
+            str(rule_file),
+            configs=[f"test:{config_file}"],
+            lines="999",  # Non-existent line
+        )
+        # Should return 0 when all rules are deselected
+        assert result == 0
+
+    def test_run_collect_only_with_lines_filter(self, tmp_path, capsys):
+        """Test run with collect_only and lines filter"""
+        rule_file = tmp_path / "rule.cmate"
+        rule_file.write_text(
+            "[targets]\ntest: 'Test config'\n---\n[par test]\nassert true, 'test1'\nassert false, 'test2'\n"
+        )
+        config_file = tmp_path / "config.json"
+        config_file.write_text('{"key": 1}')
+
+        result = cmate.run(
+            str(rule_file),
+            configs=[f"test:{config_file}"],
+            collect_only=True,
+            lines="5",  # Only select first assert
+        )
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "deselected" in captured.out
 
 
 class TestMain:
@@ -618,7 +805,7 @@ class TestRunExtended:
         """Test run with reference to undefined namespace raises ValidationError"""
         rule_file = tmp_path / "test.cmate"
         rule_file.write_text(
-            "[dependency]\ntest: 'Test config'\n---\n"
+            "[targets]\ntest: 'Test config'\n---\n"
             "[par test]\nassert ${undefined::key} == 1, 'test'\n"
         )
 
@@ -632,7 +819,7 @@ class TestRunExtended:
         """Test run with output path"""
         rule_file = tmp_path / "test.cmate"
         rule_file.write_text(
-            "[dependency]\ntest: 'Test config'\n---\n[par test]\nassert true, 'test'\n"
+            "[targets]\ntest: 'Test config'\n---\n[par test]\nassert true, 'test'\n"
         )
 
         config_file = tmp_path / "config.json"
@@ -672,7 +859,7 @@ class TestActualRun:
         ds = DataSource()
         # Use a comparison that will evaluate to False
         compare = Compare(
-            1, 1, DictPath(1, 1, "test::key"), "==", Constant(1, 10, "expected")
+            1, 1, DictPath(1, 1, "test::key"), ["=="], [Constant(1, 10, "expected")]
         )
         rule = Rule(1, 1, compare, "test message", Severity.ERROR)
         ruleset = {"test": {rule}}

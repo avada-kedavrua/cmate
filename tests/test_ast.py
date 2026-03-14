@@ -6,7 +6,6 @@ from cmate._ast import (
     Compare,
     Constant,
     Continue,
-    Dependency,
     Desc,
     Dict,
     DictPath,
@@ -20,6 +19,7 @@ from cmate._ast import (
     Node,
     Partition,
     Rule,
+    Target,
     UnaryOp,
 )
 
@@ -78,13 +78,13 @@ class TestGlobal:
         assert global_node.body == body
 
 
-class TestDependency:
-    """Tests for Dependency AST node"""
+class TestTarget:
+    """Tests for Target AST node"""
 
-    def test_dependency_creation(self):
-        """Test Dependency node creation"""
+    def test_target_creation(self):
+        """Test Target node creation"""
         body = []
-        dep = Dependency(body)
+        dep = Target(body)
         assert dep.body == body
 
 
@@ -252,12 +252,12 @@ class TestCompare:
     def test_compare_creation(self):
         """Test Compare node creation"""
         left = Constant(1, 1, 5)
-        op = "=="
-        comparator = Constant(1, 6, 5)
-        compare = Compare(1, 1, left, op, comparator)
+        ops = ["=="]
+        comparators = [Constant(1, 6, 5)]
+        compare = Compare(1, 1, left, ops, comparators)
         assert compare.left == left
-        assert compare.op == op
-        assert compare.comparator == comparator
+        assert compare.ops == ops
+        assert compare.comparators == comparators
 
     def test_compare_different_ops(self):
         """Test Compare with different operators"""
@@ -265,8 +265,18 @@ class TestCompare:
         right = Constant(1, 6, 10)
 
         for op in ["==", "!=", "<", ">", "<=", ">=", "=~", "in", "not in"]:
-            compare = Compare(1, 1, left, op, right)
-            assert compare.op == op
+            compare = Compare(1, 1, left, [op], [right])
+            assert compare.ops == [op]
+
+    def test_compare_chained(self):
+        """Test chained comparison creation"""
+        left = Constant(1, 1, 1)
+        ops = ["<", "<="]
+        comparators = [Constant(1, 5, 5), Constant(1, 10, 10)]
+        compare = Compare(1, 1, left, ops, comparators)
+        assert compare.left == left
+        assert compare.ops == ["<", "<="]
+        assert len(compare.comparators) == 2
 
 
 class TestCall:

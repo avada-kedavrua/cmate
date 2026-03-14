@@ -4,16 +4,17 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from cmate._ast import Compare, Constant, DictPath, Rule
+from cmate._ast import Constant, Rule
 from cmate._test import (
-    _build_test_case,
     _build_rule_method,
+    _build_test_case,
     make_test_suite,
     RuleAssertionError,
     RuleTestResult,
     RuleTestRunner,
 )
 from cmate.util import Severity
+from cmate.visitor import ASTFormatter
 
 
 class TestRuleAssertionError:
@@ -21,28 +22,28 @@ class TestRuleAssertionError:
 
     def test_rule_assertion_error_creation(self):
         """Test RuleAssertionError creation"""
-        rule_node = MagicMock()
-        rule_node.severity = Severity.ERROR
-        rule_node.msg = "Test error message"
-        rule_node.test = MagicMock()
+        history = (("key", "value"),)
+        err = RuleAssertionError(
+            severity=Severity.ERROR,
+            msg="Test error message",
+            test_expr="key == value",
+            history=history,
+        )
 
-        history = [("key", "value")]
-        err = RuleAssertionError(rule_node, history)
-
-        assert err.rule_node == rule_node
+        assert err.severity == Severity.ERROR
+        assert err.msg == "Test error message"
+        assert err.test_expr == "key == value"
         assert err.history == history
 
     def test_build_err_msg_simple(self):
         """Test building error message with simple history"""
-        from cmate._ast import Constant
-
-        test = Compare(
-            1, 1, DictPath(1, 1, "config::key"), "==", Constant(1, 10, "expected")
+        history = (("config::key", "value"),)
+        err = RuleAssertionError(
+            severity=Severity.ERROR,
+            msg="Test error",
+            test_expr="config::key == 'expected'",
+            history=history,
         )
-        rule_node = Rule(1, 1, test, "Test error", Severity.ERROR)
-
-        history = [("config::key", "value")]
-        err = RuleAssertionError(rule_node, history)
         msg = err.build_err_msg()
 
         assert "Test error" in msg
@@ -50,15 +51,13 @@ class TestRuleAssertionError:
 
     def test_build_err_msg_with_tuple(self):
         """Test building error message with tuple values in history"""
-        from cmate._ast import Constant
-
-        test = Compare(
-            1, 1, DictPath(1, 1, "config::key"), "==", Constant(1, 10, "expected")
+        history = (("config::key", ("actual", "reference")),)
+        err = RuleAssertionError(
+            severity=Severity.ERROR,
+            msg="Test error",
+            test_expr="config::key == 'expected'",
+            history=history,
         )
-        rule_node = Rule(1, 1, test, "Test error", Severity.ERROR)
-
-        history = [("config::key", ("actual", "reference"))]
-        err = RuleAssertionError(rule_node, history)
         msg = err.build_err_msg()
 
         assert "Test error" in msg
@@ -90,11 +89,12 @@ class TestRuleTestResult:
         test = MagicMock()
         test.namespace = "test_ns"
 
-        from cmate._ast import Constant
-
-        test_node = Compare(1, 1, DictPath(1, 1, "key"), "==", Constant(1, 10, "val"))
-        rule_node = Rule(1, 1, test_node, "error", Severity.ERROR)
-        err = RuleAssertionError(rule_node, [])
+        err = RuleAssertionError(
+            severity=Severity.ERROR,
+            msg="error",
+            test_expr="key == 'val'",
+            history=(("key", "value"),),
+        )
 
         result.addFailure(test, (Exception, err, None))
         assert len(result.failures) == 1
@@ -229,8 +229,9 @@ class TestMakeTestMethod:
         evaluator.evaluate.return_value = True
         evaluator.history = []
 
+        formatter = ASTFormatter()
         output = {}
-        test_method = _build_rule_method(rule, "test_ns", evaluator, output)
+        test_method = _build_rule_method(rule, "test_ns", evaluator, formatter, output)
 
         inst = MagicMock()
         # Should not raise
@@ -243,10 +244,11 @@ class TestMakeTestMethod:
 
         evaluator = MagicMock()
         evaluator.evaluate.return_value = False
-        evaluator.history = []
+        evaluator.history = [("key", "value")]
 
+        formatter = ASTFormatter()
         output = {}
-        test_method = _build_rule_method(rule, "test_ns", evaluator, output)
+        test_method = _build_rule_method(rule, "test_ns", evaluator, formatter, output)
 
         inst = MagicMock()
         with pytest.raises(RuleAssertionError):
@@ -261,8 +263,9 @@ class TestMakeTestMethod:
         evaluator.evaluate.return_value = True
         evaluator.history = [("key", "value")]
 
+        formatter = ASTFormatter()
         output = {}
-        test_method = _build_rule_method(rule, "test_ns", evaluator, output)
+        test_method = _build_rule_method(rule, "test_ns", evaluator, formatter, output)
         inst = MagicMock()
         test_method(inst)
 
@@ -413,19 +416,20 @@ class TestRuleTestResultPrintErrors:
         """Test printErrors with failures"""
         from unittest.runner import _WritelnDecorator
 
-        from cmate._ast import Compare, Constant, DictPath, Rule
-
         stream = _WritelnDecorator(StringIO())
         result = RuleTestResult(stream=stream)
         test = MagicMock()
         test.id.return_value = "test_id"
+        test._testMethodName = "test_1"
+        test.namespace = "test_ns"
 
-        # Create a rule with severity for sorting
-        compare = Compare(
-            1, 1, DictPath(1, 1, "test::key"), "==", Constant(1, 10, "expected")
+        # Create a RuleAssertionError with the new API
+        err = RuleAssertionError(
+            severity=Severity.ERROR,
+            msg="test message",
+            test_expr="test::key == 'expected'",
+            history=(("key", "value"),),
         )
-        rule = Rule(1, 1, compare, "test message", Severity.ERROR)
-        err = RuleAssertionError(rule, [("key", "value")])
 
         result.failures.append((test, err))
         result.printErrors()

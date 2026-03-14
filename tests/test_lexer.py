@@ -98,7 +98,7 @@ def test_tokenize_given_arithmetic_operators_when_tokenize_then_arithmetic_token
         ("if", "IF"),
         ("and", "AND"),
         ("for", "FOR"),
-        ("dependency", "DEPENDENCY"),
+        ("targets", "TARGETS"),
         ("par", "PAR"),
         ("global", "GLOBAL"),
         ("elif", "ELIF"),
