@@ -37,9 +37,8 @@ name = 'test_name'
     assert info == {"contexts": {}, "metadata": {"name": "test_name"}, "targets": {}}
 
 
-def test_parse_multiple_metadata_blocks_when_later_block_overrides_earlier_one(
-    parser, info_collector
-):
+def test_parse_multiple_metadata_blocks_raises_error(parser, info_collector):
+    """Test that multiple metadata blocks now raise error"""
     text = """\
 [metadata]
 name = 'test_1'
@@ -50,8 +49,10 @@ name = 'test_2'
 ---
 """
     node = parser.parse(text)
-    info = info_collector.collect(node)
-    assert info == {"contexts": {}, "metadata": {"name": "test_2"}, "targets": {}}
+    with pytest.raises(
+        CMateError, match="Multiple \\[metadata\\] sections not allowed"
+    ):
+        info_collector.collect(node)
 
 
 def test_collect_when_given_par_env_with_assert_in_desc_then_par_env_parsed_as_target(
@@ -810,8 +811,8 @@ a = 1
     info_collector.visit_global(node.body[0])
 
 
-def test_info_collector_visit_meta_multiple(parser, info_collector):
-    """Test InfoCollector with multiple metadata blocks"""
+def test_info_collector_visit_meta_multiple_raises_error(parser, info_collector):
+    """Test InfoCollector with multiple metadata blocks raises error"""
     text = """\
 [metadata]
 name = 'first'
@@ -821,8 +822,10 @@ name = 'second'
 ---
 """
     node = parser.parse(text)
-    info = info_collector.collect(node)
-    assert info["metadata"]["name"] == "second"
+    with pytest.raises(
+        CMateError, match="Multiple \\[metadata\\] sections not allowed"
+    ):
+        info_collector.collect(node)
 
 
 def test_expression_evaluator_visit_name_raises(parser):
@@ -934,10 +937,10 @@ assert ${context::mode} == 'production', ''
     assert "production" in info["contexts"]["mode"]["options"]
 
 
-def test_info_collector_warning_redefined_name(parser, info_collector, caplog):
-    """Test InfoCollector warning for redefined name"""
-
-    # The warning is logged, let's verify it doesn't raise
+def test_info_collector_multiple_dependency_raises_error(
+    parser, info_collector, caplog
+):
+    """Test InfoCollector raises error for multiple dependency sections"""
     text = """\
 [dependency]
 config: 'first'
@@ -947,8 +950,10 @@ config: 'second'
 ---
 """
     node = parser.parse(text)
-    # Just verify it doesn't raise
-    info_collector.collect(node)
+    with pytest.raises(
+        CMateError, match="Multiple \\[dependency\\] sections not allowed"
+    ):
+        info_collector.collect(node)
 
 
 def test_expression_evaluator_visit_list(parser):
@@ -1140,3 +1145,137 @@ assert true, 'test'
     # Should skip info rules due to severity filter
     result = collector.collect(document_node)
     assert len(result) == 0 or all(len(rules) == 0 for rules in result.values())
+
+
+# ---------------------------------------------------------------------------
+# Tests for Partition-Dependency Validation (partition must be in dependency)
+# ---------------------------------------------------------------------------
+
+
+def test_collect_partition_without_dependency_raises_error(parser, info_collector):
+    """Test that partition not in dependency section raises error"""
+    text = """\
+[par config]
+assert true, 'test'
+"""
+    node = parser.parse(text)
+    with pytest.raises(
+        CMateError, match="must be declared in \\[dependency\\] section"
+    ):
+        info_collector.collect(node)
+
+
+def test_collect_partition_with_dependency_succeeds(parser, info_collector):
+    """Test that partition with matching dependency works"""
+    text = """\
+[dependency]
+config: 'Configuration file'
+---
+
+[par config]
+assert true, 'test'
+"""
+    node = parser.parse(text)
+    info = info_collector.collect(node)
+    assert "config" in info["targets"]
+    assert info["targets"]["config"]["desc"] == "Configuration file"
+
+
+def test_collect_env_partition_without_dependency_allowed(parser, info_collector):
+    """Test that 'env' partition is exempted from dependency requirement"""
+    text = """\
+[par env]
+assert true, 'test'
+"""
+    node = parser.parse(text)
+    # Should not raise - env partition is special
+    info = info_collector.collect(node)
+    assert "env" in info["targets"]
+
+
+def test_collect_multiple_partitions_all_need_dependency(parser, info_collector):
+    """Test that all partition targets must be in dependency"""
+    text = """\
+[dependency]
+config1: 'First config'
+---
+
+[par config1]
+assert true, 'test1'
+
+[par config2]
+assert true, 'test2'
+"""
+    node = parser.parse(text)
+    with pytest.raises(CMateError, match="config2.*must be declared"):
+        info_collector.collect(node)
+
+
+# ---------------------------------------------------------------------------
+# Tests for Single Section Rule (only one metadata and one dependency)
+# ---------------------------------------------------------------------------
+
+
+def test_collect_multiple_metadata_raises_error(parser, info_collector):
+    """Test that multiple metadata sections raise error"""
+    text = """\
+[metadata]
+name = 'first'
+---
+
+[metadata]
+name = 'second'
+---
+"""
+    node = parser.parse(text)
+    with pytest.raises(
+        CMateError, match="Multiple \\[metadata\\] sections not allowed"
+    ):
+        info_collector.collect(node)
+
+
+def test_collect_multiple_dependency_raises_error(parser, info_collector):
+    """Test that multiple dependency sections raise error"""
+    text = """\
+[dependency]
+config: 'first'
+---
+
+[dependency]
+config: 'second'
+---
+"""
+    node = parser.parse(text)
+    with pytest.raises(
+        CMateError, match="Multiple \\[dependency\\] sections not allowed"
+    ):
+        info_collector.collect(node)
+
+
+def test_collect_single_metadata_succeeds(parser, info_collector):
+    """Test that single metadata section works"""
+    text = """\
+[metadata]
+name = 'test'
+version = '1.0'
+---
+"""
+    node = parser.parse(text)
+    info = info_collector.collect(node)
+    assert info["metadata"]["name"] == "test"
+    assert info["metadata"]["version"] == "1.0"
+
+
+def test_collect_single_dependency_succeeds(parser, info_collector):
+    """Test that single dependency section works"""
+    text = """\
+[dependency]
+config: 'Configuration file' @ 'json'
+---
+
+[par config]
+assert true, 'test'
+"""
+    node = parser.parse(text)
+    info = info_collector.collect(node)
+    assert "config" in info["targets"]

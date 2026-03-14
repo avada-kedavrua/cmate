@@ -307,6 +307,60 @@ class TestParse:
         assert isinstance(result, Document)
 
 
+class TestFileExtensionValidation:
+    """Tests for .cmate file extension validation"""
+
+    def test_parse_invalid_extension_raises_error(self, tmp_path):
+        """Test that non-.cmate files raise RuleSyntaxError"""
+        rule_file = tmp_path / "test.json"
+        rule_file.write_text("[metadata]\nname = 'test'\n---\n")
+
+        with pytest.raises(cmate.RuleSyntaxError, match="must have .cmate extension"):
+            cmate.parse(str(rule_file))
+
+    def test_parse_valid_cmate_extension(self, tmp_path):
+        """Test that .cmate files are accepted"""
+        from cmate._ast import Document
+
+        rule_file = tmp_path / "test.cmate"
+        rule_file.write_text("[metadata]\nname = 'test'\n---\n")
+
+        result = cmate.parse(str(rule_file))
+        assert isinstance(result, Document)
+
+    def test_parse_txt_extension_raises_error(self, tmp_path):
+        """Test that .txt files raise RuleSyntaxError"""
+        rule_file = tmp_path / "rules.txt"
+        rule_file.write_text("[metadata]\nname = 'test'\n---\n")
+
+        with pytest.raises(cmate.RuleSyntaxError, match="must have .cmate extension"):
+            cmate.parse(str(rule_file))
+
+    def test_parse_no_extension_raises_error(self, tmp_path):
+        """Test that files without extension raise RuleSyntaxError"""
+        rule_file = tmp_path / "rulefile"
+        rule_file.write_text("[metadata]\nname = 'test'\n---\n")
+
+        with pytest.raises(cmate.RuleSyntaxError, match="must have .cmate extension"):
+            cmate.parse(str(rule_file))
+
+    def test_inspect_invalid_extension_raises_error(self, tmp_path):
+        """Test that inspect rejects non-.cmate files"""
+        rule_file = tmp_path / "test.yaml"
+        rule_file.write_text("[metadata]\nname = 'test'\n---\n")
+
+        with pytest.raises(cmate.RuleSyntaxError, match="must have .cmate extension"):
+            cmate.inspect(str(rule_file), "text")
+
+    def test_run_invalid_extension_raises_error(self, tmp_path):
+        """Test that run rejects non-.cmate files"""
+        rule_file = tmp_path / "test.json"
+        rule_file.write_text("[par test]\nassert true, 'test'\n")
+
+        with pytest.raises(cmate.RuleSyntaxError, match="must have .cmate extension"):
+            cmate.run(str(rule_file))
+
+
 class TestInspect:
     """Tests for inspect function"""
 
@@ -564,7 +618,10 @@ class TestRunExtended:
         """Test run when KeyError is raised during rule collection"""
         # Create a rule file that will cause KeyError
         rule_file = tmp_path / "test.cmate"
-        rule_file.write_text("[par test]\nassert ${undefined::key} == 1, 'test'\n")
+        rule_file.write_text(
+            "[dependency]\ntest: 'Test config'\n---\n"
+            "[par test]\nassert ${undefined::key} == 1, 'test'\n"
+        )
 
         config_file = tmp_path / "config.json"
         config_file.write_text('{"key": 1}')
@@ -575,7 +632,9 @@ class TestRunExtended:
     def test_run_with_output_path(self, tmp_path):
         """Test run with output path"""
         rule_file = tmp_path / "test.cmate"
-        rule_file.write_text("[par test]\nassert true, 'test'\n")
+        rule_file.write_text(
+            "[dependency]\ntest: 'Test config'\n---\n[par test]\nassert true, 'test'\n"
+        )
 
         config_file = tmp_path / "config.json"
         config_file.write_text('{"key": 1}')
