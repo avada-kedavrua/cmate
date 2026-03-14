@@ -462,14 +462,8 @@ def run(
     output_path: Optional[Path] = None,
     severity: str = "info",
     lines: Optional[str] = None,
-    env_script_path: Optional[Path] = _DEFAULT_ENV_SCRIPT,
 ) -> int:
     """Validate configurations against rules defined in a cmate rule file.
-
-    Args:
-        env_script_path: Where to write the generated ``set_env.sh`` script.
-            Defaults to ``set_env.sh`` in the current directory.
-            Set to ``None`` to disable generation.
 
     Returns:
         0 on success, 1 on failure.
@@ -489,13 +483,12 @@ def run(
     info = InfoCollector().collect(node)
 
     data_source = _load_dependencies(info, parsed_configs, parsed_contexts)
-
     AssignmentProcessor(parsed_configs, data_source).process(node)
 
-    # Generate env script when an [par env] section exists
-    if env_script_path is not None and "env" in info["targets"]:
+    if "env" in info["targets"]:
+        env_script_path = Path("./set_env.sh").resolve()
+        gen = EnvScriptGenerator(data_source)
         try:
-            gen = EnvScriptGenerator(data_source)
             gen.collect(node)
             gen.write(env_script_path)
         except Exception:
@@ -679,18 +672,6 @@ def main(args: Optional[List[str]] = None) -> int:
         type=str,
         help="Comma-separated line numbers to run (e.g., '10,20,30')",
     )
-    run_parser.add_argument(
-        "--env-script",
-        type=Path,
-        default=Path("set_env.sh"),
-        help="Path for generated env script (default: set_env.sh)",
-    )
-    run_parser.add_argument(
-        "--no-env-script",
-        action="store_true",
-        dest="no_env_script",
-        help="Suppress env script generation",
-    )
 
     # -- inspect -------------------------------------------------------------
     inspect_parser = subparsers.add_parser(
@@ -725,7 +706,6 @@ def main(args: Optional[List[str]] = None) -> int:
         return 0
 
     # run
-    env_script = None if parsed.no_env_script else parsed.env_script
     try:
         return run(
             parsed.rule,
@@ -736,8 +716,7 @@ def main(args: Optional[List[str]] = None) -> int:
             parsed.collect_only,
             parsed.output_path,
             parsed.severity,
-            parsed.lines,
-            env_script,
+            parsed.lines
         )
     except (OSError, ValueError, ParseFormatError, CmateError):
         logger.exception("Error during run")
