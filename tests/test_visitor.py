@@ -68,7 +68,7 @@ assert 1, ''
         "targets": {
             "env": {
                 "desc": None,
-                "parse_type": None,
+                "parse_format": None,
                 "required_targets": None,
                 "required_contexts": None,
             }
@@ -94,13 +94,13 @@ assert 1, ''
         "targets": {
             "env": {
                 "desc": None,
-                "parse_type": None,
+                "parse_format": None,
                 "required_targets": None,
                 "required_contexts": None,
             },
             "sys": {
                 "desc": None,
-                "parse_type": None,
+                "parse_format": None,
                 "required_targets": None,
                 "required_contexts": None,
             },
@@ -124,7 +124,7 @@ assert ${context::a} == 2, ''
         "targets": {
             "env": {
                 "desc": None,
-                "parse_type": None,
+                "parse_format": None,
                 "required_targets": None,
                 "required_contexts": ["a"],
             }
@@ -150,7 +150,7 @@ assert ${context::a} == 3, ''
         "targets": {
             "env": {
                 "desc": None,
-                "parse_type": None,
+                "parse_format": None,
                 "required_targets": None,
                 "required_contexts": ["a"],
             }
@@ -159,7 +159,7 @@ assert ${context::a} == 3, ''
     }
 
 
-def test_collect_when_target_defined_in_dependency_block_then_parse_type_and_desc_parsed_correctly(
+def test_collect_when_target_defined_in_dependency_block_then_parse_format_and_desc_parsed_correctly(
     parser, info_collector
 ):
     text = """\
@@ -177,7 +177,7 @@ assert ${env::ABC} == ${context::test}, 'test'
         "targets": {
             "sys": {
                 "desc": "System",
-                "parse_type": "json",
+                "parse_format": "json",
                 "required_targets": ["env"],
                 "required_contexts": ["test"],
             }
@@ -225,7 +225,7 @@ fi
         "targets": {
             "mies_config": {
                 "desc": "MindIE Service 主配置文件",
-                "parse_type": "json",
+                "parse_format": "json",
                 "required_targets": None,
                 "required_contexts": ["deploy_mode"],
             }

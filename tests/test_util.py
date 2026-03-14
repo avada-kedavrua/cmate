@@ -106,13 +106,13 @@ class TestLoad:
         result = load(str(yml_file))
         assert result == test_data
 
-    def test_load_with_explicit_parse_type(self, tmp_path):
+    def test_load_with_explicit_parse_format(self, tmp_path):
         """Test loading with explicit parse type"""
         json_file = tmp_path / "config.txt"
         test_data = {"key": "value"}
         json_file.write_text(json.dumps(test_data))
 
-        result = load(str(json_file), parse_type="json")
+        result = load(str(json_file), parse_format="json")
         assert result == test_data
 
     def test_load_empty_yaml(self, tmp_path):

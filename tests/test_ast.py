@@ -130,17 +130,17 @@ class TestDesc:
         """Test Desc node creation"""
         target = Name(1, 1, "config")
         desc = "Configuration description"
-        parse_type = "json"
-        desc_node = Desc(1, 1, target, desc, parse_type)
+        parse_format = "json"
+        desc_node = Desc(1, 1, target, desc, parse_format)
         assert desc_node.target == target
         assert desc_node.desc == desc
-        assert desc_node.parse_type == parse_type
+        assert desc_node.parse_format == parse_format
 
-    def test_desc_without_parse_type(self):
-        """Test Desc without parse_type"""
+    def test_desc_without_parse_format(self):
+        """Test Desc without parse_format"""
         target = Name(1, 1, "config")
         desc_node = Desc(1, 1, target, "desc", None)
-        assert desc_node.parse_type is None
+        assert desc_node.parse_format is None
 
 
 class TestFor:

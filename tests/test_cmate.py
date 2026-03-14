@@ -25,7 +25,7 @@ class TestParseConfigs:
         assert ret is True
         assert result == {"config": ("/path/to/config", None)}
 
-    def test_parse_configs_with_parse_type(self):
+    def test_parse_configs_with_parse_format(self):
         """Test parsing config with parse type"""
         ret, result = cmate._parse_configs(["config:/path/to/config@json"])
         assert ret is True
@@ -424,7 +424,7 @@ class TestDisplayText:
         targets = {
             "config": {
                 "desc": "Configuration file",
-                "parse_type": "json",
+                "parse_format": "json",
                 "required_targets": ["base"],
                 "required_contexts": ["env"],
             }
@@ -439,7 +439,7 @@ class TestDisplayText:
         targets = {
             "env": {
                 "desc": None,
-                "parse_type": None,
+                "parse_format": None,
                 "required_targets": None,
                 "required_contexts": None,
             }
@@ -524,7 +524,7 @@ class TestValidateAndLoadTargetsExtended:
         cmate.logger.setLevel(logging.ERROR)
         ds = DataSource()
         input_targets = {"config": ("/nonexistent/path.json", None)}
-        all_targets = {"config": {"parse_type": "json"}}
+        all_targets = {"config": {"parse_format": "json"}}
 
         ret, matched = cmate._validate_and_load_targets(input_targets, all_targets, ds)
         assert ret is False
@@ -536,7 +536,7 @@ class TestValidateAndLoadTargetsExtended:
         cmate.logger.setLevel(logging.ERROR)
         ds = DataSource()
         input_targets = {"config": ("/path", "unsupported")}
-        all_targets = {"config": {"parse_type": None}}
+        all_targets = {"config": {"parse_format": None}}
 
         ret, matched = cmate._validate_and_load_targets(input_targets, all_targets, ds)
         assert ret is False
@@ -551,7 +551,7 @@ class TestValidateAndLoadTargetsExtended:
 
         ds = DataSource()
         input_targets = {"config": (str(bad_json), None)}
-        all_targets = {"config": {"parse_type": "json"}}
+        all_targets = {"config": {"parse_format": "json"}}
 
         ret, matched = cmate._validate_and_load_targets(input_targets, all_targets, ds)
         assert ret is False
@@ -665,7 +665,7 @@ class TestValidateAndLoadTargetsMore:
         mock_load.side_effect = OSError("File not found")
 
         input_targets = {"config": ("/path/to/config.json", None)}
-        all_targets = {"config": {"parse_type": "json"}}
+        all_targets = {"config": {"parse_format": "json"}}
         ds = DataSource()
 
         ret, matched = cmate._validate_and_load_targets(input_targets, all_targets, ds)
@@ -678,7 +678,7 @@ class TestValidateAndLoadTargetsMore:
         mock_load.side_effect = TypeError("Invalid type")
 
         input_targets = {"config": ("/path/to/config.json", None)}
-        all_targets = {"config": {"parse_type": "json"}}
+        all_targets = {"config": {"parse_format": "json"}}
         ds = DataSource()
 
         ret, matched = cmate._validate_and_load_targets(input_targets, all_targets, ds)
@@ -691,7 +691,7 @@ class TestValidateAndLoadTargetsMore:
         mock_load.side_effect = Exception("Generic error")
 
         input_targets = {"config": ("/path/to/config.json", None)}
-        all_targets = {"config": {"parse_type": "json"}}
+        all_targets = {"config": {"parse_format": "json"}}
         ds = DataSource()
 
         ret, matched = cmate._validate_and_load_targets(input_targets, all_targets, ds)
