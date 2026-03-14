@@ -1,0 +1,731 @@
+[metadata]
+name = 'MindIE 配置项检查'
+version = '1.0'
+authors = [{"name": "liujiawang", "email": "anonymousdev@163.com"}, {"name": "zhangxiaoshan"}]
+description = 'MindIE 框架配置文件检查，支持 PD混部、PD分离、大EP、边云协同等多种部署场景的配置验证'
+
+---
+
+[dependency]
+mies_config: 'MindIE Service 主配置文件，用于 PD 混部场景的配置检查,通常路径为 /usr/local/Ascend/mindie/latest/mindie-service/conf/config.json' @ 'json'
+ms_config: 'MindIE Service 配置文件的通用表示，在 PD 分离场景中使用，包含模型路径、服务参数等基础配置，通常位于 kubernetes_deploy_scripts_latest/conf 下' @ 'json'
+ms_controller: 'MS Controller 组件的配置文件，在 PD 分离场景中用于控制器的参数配置，通常位于 kubernetes_deploy_scripts_latest/conf 下' @ 'json'
+ms_coordinator: 'MS Coordinator 组件的配置文件，在 PD 分离场景中用于协调器的参数配置，通常位于 kubernetes_deploy_scripts_latest/conf 下' @ 'json'
+mindie_service_single_container: '单机 PD 分离场景的 Kubernetes Deployment 配置，包含容器规格、资源限制等，通常位于 kubernetes_deploy_scripts_latest/deployment 下' @ 'yaml'
+mindie_service_single_container_base_A3: '针对 800I A3 机器的单机 PD 分离场景特殊配置，包含 A3 特定的资源分配，通常位于 kubernetes_deploy_scripts_latest/deployment 下' @ 'yaml'
+mindie_server: 'MindIE Server 的 Kubernetes 服务配置，定义服务暴露和网络配置，通常位于 kubernetes_deploy_scripts_latest/deployment 下' @ 'yaml'
+mindie_ms_coordinator: 'MindIE MS Coordinator 的 Kubernetes 部署配置，包含协调器容器的详细参数，通常位于 kubernetes_deploy_scripts_latest/deployment 下' @ 'yaml'
+mindie_ms_controller: 'MindIE MS Controller 的 Kubernetes 部署配置，包含控制器容器的详细参数，通常位于 kubernetes_deploy_scripts_latest/deployment 下' @ 'yaml'
+user_config: '大 EP 场景的用户配置文件 user_config.json，包含用户自定义的部署参数和资源分配，通常位于 kubernetes_deploy_scripts_latest 下' @ 'json'
+mindie_env: '大 EP 场景的环境变量配置文件 mindie_env.json，包含 Pod 运行时的环境变量设置，通常位于 kubernetes_deploy_scripts_latest/conf 下' @ 'json'
+deploy_mode: '部署模式标识，可选值: pd_mix(混部)/pd_disaggregation(多机分离)/pd_disaggregation_single_container(单机分离)/ep(大EP场景)/lwd(边云协同场景)，用于确定检查规则集'
+npu_type: 'NPU 硬件类型，可选值: 800I A2/800I A3/G8600，影响硬件特定的检查项和资源配置验证'
+model_type: '模型类型标识，deepseek 开头触发 DeepSeek 模型特殊校验，其他值为通用模型检查'
+arch: '框架架构类型，可选值: mindie/vllm，决定解析 rank table 的格式和框架特定检查规则'
+
+---
+
+[global]
+# PD Mix 场景变量
+if ${context::deploy_mode} == 'pd_mix':
+    dp = ${mies_config::BackendConfig.ModelDeployConfig.ModelConfig[0].dp} or 1
+    tp = ${mies_config::BackendConfig.ModelDeployConfig.ModelConfig[0].tp} or 1
+    cp = ${mies_config::BackendConfig.ModelDeployConfig.ModelConfig[0].cp} or 1
+    sp = ${mies_config::BackendConfig.ModelDeployConfig.ModelConfig[0].sp} or 1
+    pp = ${mies_config::BackendConfig.ModelDeployConfig.ModelConfig[0].pp} or 1
+    world_size = ${mies_config::BackendConfig.ModelDeployConfig.ModelConfig[0].worldSize}
+    
+    if ${context::model_type} == 'deepseek':
+        moe_ep = ${mies_config::BackendConfig.ModelDeployConfig.ModelConfig[0].moe_ep} or 1
+        moe_tp = ${mies_config::BackendConfig.ModelDeployConfig.ModelConfig[0].moe_tp} or 1
+        max_seq_len = ${mies_config::BackendConfig.ModelDeployConfig.maxSeqLen}
+    fi
+
+# PD 单机分离场景变量
+elif ${context::deploy_mode} == 'pd_disaggregation_single_container':
+    config_model_weight_path = ${ms_config::BackendConfig.ModelDeployConfig.ModelConfig[0].modelWeightPath}
+    dp = ${ms_config::BackendConfig.ModelDeployConfig.ModelConfig[0].dp} or 1
+    tp = ${ms_config::BackendConfig.ModelDeployConfig.ModelConfig[0].tp} or 1
+    cp = ${ms_config::BackendConfig.ModelDeployConfig.ModelConfig[0].cp} or 1
+    sp = ${ms_config::BackendConfig.ModelDeployConfig.ModelConfig[0].sp} or 1
+    pp = ${ms_config::BackendConfig.ModelDeployConfig.ModelConfig[0].pp} or 1
+    world_size = ${ms_config::BackendConfig.ModelDeployConfig.ModelConfig[0].worldSize}
+    
+    if ${context::npu_type} == 'A2':
+        # 使用 for 循环处理环境变量
+        for item in ${mindie_service_single_container::[1].spec.template.spec.containers[0].env}:
+            if ${item.name} == 'MINDIE_MS_P_RATE':
+                p_rate = ${item.value}
+            elif ${item.name} == 'MINDIE_MS_D_RATE':
+                d_rate = ${item.value}
+            elif ${item.name} == 'MINDIE_LOG_LEVEL':
+                MINDIE_LOG_LEVEL = ${item.value}
+            elif ${item.name} == 'MINDIE_LOG_TO_FILE':
+                MINDIE_LOG_TO_FILE = ${item.value}
+            elif ${item.name} == 'MINDIE_LOG_TO_STDOUT':
+                MINDIE_LOG_TO_STDOUT = ${item.value}
+            elif ${item.name} == 'MINDIE_MS_GEN_SERVER_PORT':
+                MINDIE_MS_GEN_SERVER_PORT = ${item.value}
+            fi
+        done
+        
+        # 处理 volumes
+        for volume in ${mindie_service_single_container::[1].spec.template.spec.volumes}:
+            if "${volume.name} == 'model-path'":
+                host_model_path = ${volume.hostPath.path}
+            fi
+        done
+        
+        # 处理 volumeMounts
+        for mount in ${mindie_service_single_container::[1].spec.template.spec.containers[0].volumeMounts}:
+            if "${mount.name} == 'model-path'":
+                container_model_path = ${mount.mountPath}
+            fi
+        done
+
+    elif ${context::npu_type} == 'A3':
+        # A3 场景的类似处理
+        for item in ${mindie_service_single_container_base_A3::[1].spec.template.spec.containers[0].env}:
+            if ${item.name} == 'MINDIE_MS_P_RATE':
+                p_rate = ${item.value}
+            elif ${item.name} == 'MINDIE_MS_D_RATE':
+                d_rate = ${item.value}
+            elif ${item.name} == 'MINDIE_LOG_LEVEL':
+                MINDIE_LOG_LEVEL = ${item.value}
+            elif ${item.name} == 'MINDIE_LOG_TO_FILE':
+                MINDIE_LOG_TO_FILE = ${item.value}
+            elif ${item.name} == 'MINDIE_LOG_TO_STDOUT':
+                MINDIE_LOG_TO_STDOUT = ${item.value}
+            elif ${item.name} == 'MINDIE_MS_GEN_SERVER_PORT':
+                MINDIE_MS_GEN_SERVER_PORT = ${item.value}
+            fi
+        done
+        
+        for volume in ${mindie_service_single_container_base_A3::[1].spec.template.spec.volumes}:
+            if "${volume.name} == 'model-path'":
+                host_model_path = ${volume.hostPath.path}
+            fi
+        done
+        
+        for mount in ${mindie_service_single_container_base_A3::[1].spec.template.spec.containers[0].volumeMounts}:
+            if "${mount.name} == 'model-path'":
+                container_model_path = ${mount.mountPath}
+            fi
+        done
+    fi
+
+# PD 分离场景变量
+elif ${context::deploy_mode} == 'pd_disaggregation' and ${context::npu_type} == 'A2':
+    dp = ${ms_config::BackendConfig.ModelDeployConfig.ModelConfig[0].dp} or 1
+    tp = ${ms_config::BackendConfig.ModelDeployConfig.ModelConfig[0].tp} or 1
+    cp = ${ms_config::BackendConfig.ModelDeployConfig.ModelConfig[0].cp} or 1
+    sp = ${ms_config::BackendConfig.ModelDeployConfig.ModelConfig[0].sp} or 1
+    pp = ${ms_config::BackendConfig.ModelDeployConfig.ModelConfig[0].pp} or 1
+    world_size = ${ms_config::BackendConfig.ModelDeployConfig.ModelConfig[0].worldSize}
+    
+    # 处理 mindie_server 环境变量
+    for item in ${mindie_server::[1].spec.template.spec.containers[0].env}:
+        if ${item.name} == 'MINDIE_LOG_LEVEL':
+            MINDIE_LOG_LEVEL_server = ${item.value}
+        elif ${item.name} == 'MINDIE_LOG_TO_FILE':
+            MINDIE_LOG_TO_FILE_server = ${item.value}
+        elif ${item.name} == 'MINDIE_LOG_TO_STDOUT':
+            MINDIE_LOG_TO_STDOUT_server = ${item.value}
+        fi
+    done
+    
+    # 处理 mindie_ms_coordinator 环境变量
+    for item in ${mindie_ms_coordinator::[0].spec.template.spec.containers[0].env}:
+        if ${item.name} == 'MINDIE_LOG_LEVEL':
+            MINDIE_LOG_LEVEL_coordinator = ${item.value}
+        elif ${item.name} == 'MINDIE_LOG_TO_FILE':
+            MINDIE_LOG_TO_FILE_coordinator = ${item.value}
+        elif ${item.name} == 'MINDIE_LOG_TO_STDOUT':
+            MINDIE_LOG_TO_STDOUT_coordinator = ${item.value}
+        fi
+    done
+    
+    # 处理 mindie_ms_controller 环境变量
+    for item in ${mindie_ms_controller::spec.template.spec.containers[0].env}:
+        if ${item.name} == 'MINDIE_LOG_LEVEL':
+            MINDIE_LOG_LEVEL_controller = ${item.value}
+        elif ${item.name} == 'MINDIE_LOG_TO_FILE':
+            MINDIE_LOG_TO_FILE_controller = ${item.value}
+        elif ${item.name} == 'MINDIE_LOG_TO_STDOUT':
+            MINDIE_LOG_TO_STDOUT_controller = ${item.value}
+        fi
+    done
+
+# EP 场景变量
+elif ${context::deploy_mode} == 'ep':
+    p_dp = ${user_config::mindie_server_prefill_config.BackendConfig.ModelDeployConfig.ModelConfig[0].dp} or 1
+    p_tp = ${user_config::mindie_server_prefill_config.BackendConfig.ModelDeployConfig.ModelConfig[0].tp} or 1
+    p_cp = ${user_config::mindie_server_prefill_config.BackendConfig.ModelDeployConfig.ModelConfig[0].cp} or 1
+    p_sp = ${user_config::mindie_server_prefill_config.BackendConfig.ModelDeployConfig.ModelConfig[0].sp} or 1
+    p_pp = ${user_config::mindie_server_prefill_config.BackendConfig.ModelDeployConfig.ModelConfig[0].pp} or 1
+    p_moe_ep = ${user_config::mindie_server_prefill_config.BackendConfig.ModelDeployConfig.ModelConfig[0].moe_ep} or 1
+    p_moe_tp = ${user_config::mindie_server_prefill_config.BackendConfig.ModelDeployConfig.ModelConfig[0].moe_tp} or 1
+    single_p_instance_pod_num = ${user_config::deploy_config.single_p_instance_pod_num}
+    p_pod_npu_num = ${user_config::deploy_config.p_pod_npu_num}
+    d_dp = ${user_config::mindie_server_decode_config.BackendConfig.ModelDeployConfig.ModelConfig[0].dp} or 1
+    d_tp = ${user_config::mindie_server_decode_config.BackendConfig.ModelDeployConfig.ModelConfig[0].tp} or 1
+    d_cp = ${user_config::mindie_server_decode_config.BackendConfig.ModelDeployConfig.ModelConfig[0].cp} or 1
+    d_sp = ${user_config::mindie_server_decode_config.BackendConfig.ModelDeployConfig.ModelConfig[0].sp} or 1
+    d_pp = ${user_config::mindie_server_decode_config.BackendConfig.ModelDeployConfig.ModelConfig[0].pp} or 1
+    d_moe_ep = ${user_config::mindie_server_decode_config.BackendConfig.ModelDeployConfig.ModelConfig[0].moe_ep} or 1
+    d_moe_tp = ${user_config::mindie_server_decode_config.BackendConfig.ModelDeployConfig.ModelConfig[0].moe_tp} or 1
+    single_d_instance_pod_num = ${user_config::deploy_config.single_d_instance_pod_num}
+    d_pod_npu_num = ${user_config::deploy_config.d_pod_npu_num}
+    max_seq_len = ${user_config::mindie_server_prefill_config.BackendConfig.ModelDeployConfig.maxSeqLen}
+
+# lwd 场景 -- contributed to zxs
+elif ${context::deploy_mode} == 'lwd':
+    dp = ${mies_config::BackendConfig.ModelDeployConfig.ModelConfig[0].dp} or 1
+    tp = ${mies_config::BackendConfig.ModelDeployConfig.ModelConfig[0].tp} or 1
+    cp = ${mies_config::BackendConfig.ModelDeployConfig.ModelConfig[0].cp} or 1
+    sp = ${mies_config::BackendConfig.ModelDeployConfig.ModelConfig[0].sp} or 1
+    pp = ${mies_config::BackendConfig.ModelDeployConfig.ModelConfig[0].pp} or 1
+    world_size = ${mies_config::BackendConfig.ModelDeployConfig.ModelConfig[0].worldSize}
+    
+    lwd = ${mies_config::ServerConfig.layerwiseDisaggregated}
+    lwd_role_type = ${mies_config::ServerConfig.layerwiseDisaggregatedRoleType}
+    lwd_master_ip = ${mies_config::ServerConfig.layerwiseDisaggregatedMasterIpAddress}
+    lwd_slave_ip = ${mies_config::ServerConfig.layerwiseDisaggregatedSlaveIpAddress}
+    lwd_master_data_port = ${mies_config::ServerConfig.layerwiseDisaggregatedDataPort}
+    lwd_master_crtl_port = ${mies_config::ServerConfig.layerwiseDisaggregatedCrtlPort}
+    
+    lwd_master_npu_num = ${mies_config::BackendConfig.ModelDeployConfig.ModelConfig[0].models.layerwiseDisaggregatedMasterDeviceNum}
+    lwd_slave_npu_num = ${mies_config::BackendConfig.ModelDeployConfig.ModelConfig[0].models.layerwiseDisaggregatedSlaveDeviceNum}
+
+    if ${context::model_type} == 'deepseek':
+        moe_ep = ${mies_config::BackendConfig.ModelDeployConfig.ModelConfig[0].moe_ep} or 1
+        moe_tp = ${mies_config::BackendConfig.ModelDeployConfig.ModelConfig[0].moe_tp} or 1
+        max_seq_len = ${mies_config::BackendConfig.ModelDeployConfig.maxSeqLen}
+    fi
+fi
+
+--- 
+
+[par env]
+if ${context::deploy_mode} == 'pd_mix':
+    assert ${MINDIE_LOG_TO_FILE} in ['1', 'true'], '建议将 MindIE 日志写入文件，便于排查问题', info
+    assert ${MINDIE_LOG_TO_STDOUT} in ['1', 'true'], '建议开启 MindIE 日志打屏，便于查看程序运行状态', info
+    assert ${MINDIE_LOG_LEVEL} in [NA, 'info', 'INFO'], '如果配置了 MINDIE_LOG_LEVEL，建议设置为 info 或 INFO，表示日志级别为 info', info
+
+    if ${context::model_type} == 'deepseek':
+        assert ${PYTORCH_NPU_ALLOC_CONF} == 'expandable_segments:True', '需要开启 torch_npu 虚拟内存机制', warning
+        assert ${ATB_WORKSPACE_MEM_ALLOC_ALG_TYPE} == '3', 'workspace 内存分配算法选择，建议设置为 3，最大优化显存碎片与 workspace 空间', warning
+        assert ${ATB_WORKSPACE_MEM_ALLOC_GLOBAL} == '1', '建议开启全局中间 tensor 内存分配算法，提升显存利用率', warning
+        assert ${HCCL_OP_EXPANSION_MODE} == 'AIV', 'HCCL_OP_EXPANSION_MODE 强烈建议设置为 AIV，设置通信算法的编排展开位置在 Device 侧的 AI Vector Core 计算单元', error
+        assert ${ATB_LLM_HCCL_ENABLE} == '1', '建议开启 HCCL 通信后端', warning
+        assert ${ATB_LAYER_INTERNAL_TENSOR_REUSE} == '1', '建议开启 Layer 间的中间 Tensor 复用', info
+        assert ${HCCL_EXEC_TIMEOUT} == '0', 'HCCL 执行超时时间建议设置为 0，不限制超时', warning
+        assert ${ATB_LLM_ENABLE_AUTO_TRANSPOSE} == '0', '不能开启权重右矩阵自动转置', error
+        assert ${MINDIE_ASYNC_SCHEDULING_ENABLE} == '1', '建议开启 MindIE 异步调度特性，提升推理性能', info
+        assert ${TASK_QUEUE_ENABLE} == '2', '建议开启 task_queue 算子下发队列 Level 2 优化', info
+
+        if ${context::npu_type} == 'A2':
+            assert path_exists(${RANK_TABLE_FILE}), '需要配置为 rank table 文件路径，在 MindIE 2.0 及以下版本忽略此提示', info
+            assert path_exists(${RANKTABLEFILE}), '需要配置为 rank table 文件路径，在 MindIE 2.1 及以上版本忽略此提示', info
+            assert ${MIES_CONTAINER_IP} == ${global::cur_ip}, 'MIES_CONTAINER_IP 表示当前容器 IP 地址，需要设置为当前容器 IP', error
+            assert ${MASTER_IP} != NA, 'MASTER_IP 注意需要设置为主 server 的 IP 地址', error
+            assert ${HCCL_BUFFSIZE} == '64', '用于控制两个 NPU 之间共享数据的缓存区大小，Atlas 800I A2 双机 DeepSeek 场景下建议设置的 HCCL_BUFFSIZE 为 64', info
+            assert ${HCCL_CONNECT_TIMEOUT} == '3600', '双机 DeepSeek 场景下，HCCL 建链超时时间建议设置为 3600 秒', info
+            assert ${NPU_MEMORY_FRACTION} == '0.92', '双机 DeepSeek 场景下，NPU 显存比建议设置为 0.92，可根据实际业务场景加大，出现 out of memory 时可以尝试调大该值', info
+            assert ${OMP_NUM_THREADS} == '10', '双机 DeepSeek 场景下，OpenMP 并行数建议设置为 10', info
+            assert ${HCCL_ALGO} == 'level0:NA;level1:pipeline', '双机 DeepSeek 场景下，建议开启 HCCL 通信流水线并行算法', info
+
+        elif ${context::npu_type} == 'A3':
+            assert ${NPU_MEMORY_FRACTION} == '0.96', 'A3 单机 DeepSeek 混部场景下，NPU 显存比建议设置为 0.96，可根据实际业务场景加大，出现 out of memory 时可以尝试调大该值', info
+            assert ${HCCL_CONNECT_TIMEOUT} == '7200', 'A3 单机 DeepSeek 混部场景下，HCCL 建链超时时间建议设置为 7200 秒', info
+            assert ${OMP_NUM_THREADS} == '16', 'A3 单机 DeepSeek 混部场景下，OpenMP 并行数建议设置为 16', info
+        fi
+    fi
+
+elif ${context::deploy_mode} == 'lwd':
+    assert ${MINDIE_ASYNC_SCHEDULING_ENABLE} == '1', '建议开启 MindIE 异步调度特性，提升推理性能', info
+
+    if ${context::model_type} == 'deepseek':
+        assert ${NPU_MEMORY_FRACTION} == '0.92', 'DeepSeek 场景下，NPU 显存比建议设置为 0.92，可根据实际业务场景加大，出现 out of memory 时可以尝试调大该值', info
+    fi
+fi
+
+---
+
+[par mies_config]
+if ${context::deploy_mode} == 'pd_mix':
+    assert ${pp} == 1, 'pp 取值只能等于 1', error
+    assert ${sp} in [1, ${tp}], 'sp 取值只能等于 1 或者等于 tp 的值', error
+    assert ${ServerConfig.tokenTimeout} == 600, 'tokenTimeout 建议值为 600，表示每 token 的超时时间，在测试推理性能时可以适当增大，不超过 3600', info
+    assert ${ServerConfig.e2eTimeout} == 600, 'e2eTimeout 建议值为600，表示端到端推理的超时时间，在测试推理性能时可以适当增大，不超过 65535', info
+    assert ${ServerConfig.httpsEnabled} == false, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+    assert ${ServerConfig.inferMode} in ['standard', 'Standard'], 'PD 混部场景下，inferMode 应该是 standard 或者 Standard', error
+    assert ${ServerConfig.interCommTLSEnabled} == false, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+    assert ${BackendConfig.ModelDeployConfig.maxSeqLen} >= ${BackendConfig.ModelDeployConfig.maxInputTokenLen}, 'maxSeqLen 不应该小于 maxInputTokenLen，表示输入 token 加输出 token 的上限', error
+    assert ${BackendConfig.ModelDeployConfig.maxInputTokenLen} >= 1, 'maxInputTokenLen 应该大于等于 1，表示输入 token 的上限', error
+    assert path_exists(${BackendConfig.ModelDeployConfig.ModelConfig[0].modelWeightPath}), 'modelWeightPath 需要配置为当前容器中挂载的模型权重路径，该路径需要存在', error
+    assert ${BackendConfig.ModelDeployConfig.ModelConfig[0].ignore_eos} == false, 'ignore_eos 表示是否忽略 eos token，测试固定长度输出时可以设置为 true', info
+    assert ${BackendConfig.ScheduleConfig.maxPrefillBatchSize} >= 1, '表示 prefill 的最大 batch size，不能小于 1', error
+    assert ${BackendConfig.ScheduleConfig.maxPrefillTokens} >= ${BackendConfig.ModelDeployConfig.maxInputTokenLen}, 'maxPrefillTokens 需要设置大于 maxInputTokenLen，表示 prefill 最大 token 数', error
+    assert 1 <= ${BackendConfig.ScheduleConfig.maxIterTimes} and ${BackendConfig.ScheduleConfig.maxIterTimes} <= ${BackendConfig.ModelDeployConfig.maxSeqLen}, 'maxIterTimes 应该大于等于 1 小于等于 maxSeqLen', error
+
+    if ${context::model_type} == 'deepseek':
+        assert int(${dp}) * int(${tp}) * int(${cp}) * int(${pp}) == 16, '在 Atlas 800I A2 双机 / A3 单机 DeepSeek PD 混部部署场景下，并行策略要求保证 dp * tp * cp * pp = 16，其中没配置的并行策略默认值为 1', error
+
+        if ${max_seq_len} <= 18000:
+            assert ${dp} == 2 and ${tp} == 8 and ${sp} == 1, '在 Atlas 800I A2 双机 / A3 单机 DeepSeek PD 混部部署场景下，maxSeqLen 小于等于 18000 时, 并行策略建议设置为：dp = 2, tp = 8, sp = 1，其中没配置的并行策略默认值为 1', info
+        else:
+            assert ${cp} == 2 and ${tp} == 8 and ${sp} == 8, '在 Atlas 800I A2 双机 / A3 单机 DeepSeek PD 混部部署场景下，maxSeqLen 大于 18000 时，并行策略建议设置为：cp = 2, tp = 8, sp = 8，其中没配置的并行策略默认值为 1', info
+        fi
+
+        assert int(${moe_ep}) * int(${moe_tp}) == 16, '在 Atlas 800I A2 双机 / A3 单机 DeepSeek PD 混部部署场景下，专家并行策略需要满足 moe_ep * moe_tp = 16，其中没配置的并行策略默认值为 1', error
+
+        if ${max_seq_len} <= 18000:
+            assert ${moe_ep} == 4 and ${moe_tp} == 4, '在 Atlas 800I A2 双机 / A3 单机 DeepSeek PD 混部部署场景下，maxSeqLen 小于等于 18000 时，专家并行策略建议设置为：moe_ep = 4, moe_tp = 4, 其中没配置的并行策略默认值为 1', info
+        else:
+            assert ${moe_ep} == 16 and ${moe_tp} == 1, '在 Atlas 800I A2 双机 / A3 单机 DeepSeek PD 混部部署场景下，maxSeqLen 大于 18000 时，专家并行策略建议设置为：moe_ep = 16, moe_tp = 1, 其中没配置的并行策略默认值为 1', info
+        fi
+
+        if ${max_seq_len} <= 68000:
+            assert ${BackendConfig.ModelDeployConfig.ModelConfig[0].plugin_params} == '{"plugin_type":"mtp","num_speculative_tokens": 1}', '在上下文长度 maxSeqLen 在 68000 以下场景，建议开启 MTP 特性，值为 {"plugin_type":"mtp","num_speculative_tokens": 1}', info
+        else:
+            assert ${BackendConfig.ModelDeployConfig.ModelConfig[0].plugin_params} == NA, '在上下文长度 maxSeqLen 大于 68000 场景，由于显存不充足，建议不开启 MTP 特性，需要移除 plugin_type 中的 mtp 特性', info
+        fi
+
+        assert ${BackendConfig.ModelDeployConfig.ModelConfig[0].models.deepseekv2.enable_mlapo_prefetch} == true, 'enable_mlapo_prefetch 表示是否开启 MLAPO 预取，建议开启', info
+        assert ${BackendConfig.ModelDeployConfig.ModelConfig[0].models.deepseekv2.kv_cache_options} == true, 'enable_nz 表示 kv cache 是否使用 NZ 格式，建议开启', info
+
+        if ${context::npu_type} == 'A2':
+            assert ${BackendConfig.npuDeviceIds[0]} == [0, 1, 2, 3, 4, 5, 6, 7], '在 Atlas 800I A2 场景双机拉起 DeepSeek 模型场景下，npuDeviceIds 应该设置为 [[0, 1, 2, 3, 4, 5, 6, 7]]', error
+            assert ${BackendConfig.multiNodesInferEnabled} == true, 'multiNodesInferEnabled 表示服务跨机推理，在 Atlas 800I A2 场景双机拉起 DeepSeek 模型场景下应该是 true', error
+            assert ${world_size} == 8, 'worldSize 表示服务跨机推理时的 npu 卡数，在 Atlas 800I A2 场景双机拉起 DeepSeek 模型场景下应该是 8', error
+        elif ${context::npu_type} == 'A3':
+            assert ${BackendConfig.npuDeviceIds[0]} == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], '在 Atlas 800I A3 场景单机拉起 DeepSeek 模型场景下，npuDeviceIds 应该设置为 [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]]', error
+            assert ${BackendConfig.multiNodesInferEnabled} == false, 'multiNodesInferEnabled 表示服务跨机推理，在 Atlas 800I A3 场景单机拉起 DeepSeek 模型场景下应该是 false', error
+            assert ${world_size} == 16, 'worldSize 表示服务跨机推理时的 npu 卡数，在 Atlas 800I A3 场景单机拉起 DeepSeek 模型场景下应该是 16', error
+        fi
+    
+    else:
+        if ${multi_nodes_infer_enabled} == false:
+            assert int(${dp}) * int(${tp}) * int(${cp}) * int(${pp}) == ${world_size}, '在非跨机场景下，并行策略要求保证 dp * tp * cp * pp = worldSize，其中没配置的并行策略默认值为 1', warning
+        fi
+        assert len(${BackendConfig.npuDeviceIds[0]}) == ${world_size}, 'PD 混部场景下，config.json 的 npuDeviceIds 的长度需要和 world_size 保持一致', error
+        assert ${multi_nodes_infer_enabled} == false, 'multiNodesInferEnabled 表示服务跨机推理，请确认推理场景是否存在 server 示例跨机，如果没有跨机需求则需要关闭', info
+
+        if ${context::npu_type} == 'A2':
+            assert 1 <= ${world_size} and ${world_size} <= 8, 'Atlas 800I A2 服务器上，PD 混部场景下，worldSize 取值范围为 1 到 8', error
+        elif ${context::npu_type} == 'A3':
+            assert 1 <= ${world_size} and ${world_size} <= 16, 'Atlas 800I A3 服务器上，PD 混部场景下，worldSize 取值范围为 1 到 16', error
+        fi
+    fi
+
+elif ${context::deploy_mode} == 'lwd':
+    assert ${lwd} == true, 'layerwiseDisaggregated 取值只能等于 true', error
+    assert ${lwd_role_type} in ['master', 'slave'], '分布式推理场景下，layerwiseDisaggregatedRoleType 只能是 master 或者 slave', error
+
+    assert ${pp} == 1, 'pp 取值只能等于 1', error
+    assert ${dp} == 1, 'dp 取值只能等于 1', error
+    assert ${sp} == 1, 'sp 取值只能等于 1', error
+    assert ${ServerConfig.tokenTimeout} == 600, 'tokenTimeout 建议值为 600，表示每 token 的超时时间，在测试推理性能时可以适当增大，不超过 3600', info
+    assert ${ServerConfig.e2eTimeout} == 600, 'e2eTimeout 建议值为600，表示端到端推理的超时时间，在测试推理性能时可以适当增大，不超过 65535', info
+    
+    if ${lwd_role_type} == 'master':
+        assert ${ServerConfig.httpsEnabled} == true, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+        assert ${ServerConfig.interCommTLSEnabled} == false, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+    fi
+    
+    assert ${ServerConfig.inferMode} in ['standard', 'Standard'], '分布式推理场景下，inferMode 应该是 standard 或者 Standard', error
+    assert ${BackendConfig.ModelDeployConfig.maxSeqLen} >= ${BackendConfig.ModelDeployConfig.maxInputTokenLen}, 'maxSeqLen 不应该小于 maxInputTokenLen，表示输入 token 加输出 token 的上限', error
+    assert ${BackendConfig.ModelDeployConfig.maxInputTokenLen} >= 1, 'maxInputTokenLen 应该大于等于 1，表示输入 token 的上限', error
+    assert path_exists(${BackendConfig.ModelDeployConfig.ModelConfig[0].modelWeightPath}), 'modelWeightPath 需要配置为当前容器中挂载的模型权重路径，该路径需要存在', error
+    assert ${BackendConfig.ScheduleConfig.maxPrefillBatchSize} >= 1, '表示 prefill 的最大 batch size，不能小于 1', error
+    assert ${BackendConfig.ScheduleConfig.maxPrefillTokens} >= ${BackendConfig.ModelDeployConfig.maxInputTokenLen}, 'maxPrefillTokens 需要设置大于 maxInputTokenLen，表示 prefill 最大 token 数', error
+    assert ${BackendConfig.ScheduleConfig.maxIterTimes} in range(1, ${BackendConfig.ModelDeployConfig.maxSeqLen}), 'maxIterTimes 应该大于等于 1 小于等于 maxSeqLen', error
+
+    assert len(${BackendConfig.npuDeviceIds[0]}) == ${world_size}, '分布式推理场景下，config.json 的 npuDeviceIds 的长度需要和 world_size 保持一致', error
+    
+    if ${lwd_role_type} == 'master':
+        assert ${world_size} in [2,4,8], 'Atlas 800I A2 服务器上，分布式推理场景下，worldSize 取值范围只能为 2,4,8', error
+    elif ${lwd_role_type} == 'slave':
+        assert ${world_size} == 8, 'Atlas 800I A2 服务器上，分布式推理场景下，worldSize 取值范围只能为 8', error
+    fi
+    
+    assert ${lwd_master_data_port} in range(1024, 65536), 'layerwiseDisaggregatedDataPort 取值范围为 1024 到 65535', error
+    
+    for port in ${lwd_master_crtl_port}:
+        assert ${port} in range(1024, 65536), 'layerwiseDisaggregatedCtrlPort 取值范围为 1024 到 65535', error
+    done
+
+    assert ${BackendConfig.multiNodesInferEnabled} == False, 'multiNodesInferEnabled 表示服务跨机推理，分布式推理场景下不支持', error
+    assert ${ServerConfig.distDPServerEnabled} == False, '分布式推理场景,不兼容distDPServerEnabled', error
+    assert ${BackendConfig.ModelDeployConfig.ModelConfig[0].backendType} == 'atb', '分布式推理,只支持atb后端类型', error
+    assert ${BackendConfig.ModelDeployConfig.ModelConfig[0].plugin_params} == NA, '分布式推理,不支持plugin_params', error
+    assert ${BackendConfig.ScheduleConfig.templateType} == 'Standard', '分布式推理,不支持非Standard的templateType', error
+    assert ${BackendConfig.ScheduleConfig.supportSelectBatch} == False, '分布式推理,不支持supportSelectBatch', error
+    assert ${BackendConfig.ScheduleConfig.bufferResponseEnabled} == False, '分布式推理,不支持bufferResponseEnabled', error
+fi
+
+---
+
+[par ms_config]
+if ${context::deploy_mode} == 'pd_disaggregation_single_container':
+    assert ${pp} == 1, '单机 PD 分离场景下，conf/config.json 中，pp 取值只能等于 1', error
+    assert path_exists(${config_model_weight_path}) and ${config_model_weight_path} == ${host_model_path}, '单机 PD 分离场景下，conf/config.json 中 modelWeightPath 需要和 deployment/mindie_service_single_container.yaml 中挂载在容器中的权重路径一致', error
+    assert ${sp} in [1, ${tp}], '单机 PD 分离场景下，conf/config.json 中，sp 取值只能等于 1 或者等于 tp 的值', error
+    assert ${ServerConfig.httpsEnabled} == false, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+    assert ${ServerConfig.inferMode} == 'dmi', '单机 PD 分离场景下，conf/config.json 的 inferMode 应该是 dmi', error
+    assert ${ServerConfig.interCommTLSEnabled} == false, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+    assert ${BackendConfig.interNodeTLSEnabled} == false, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+    assert len(${BackendConfig.npuDeviceIds[0]}) == ${world_size}, '单机 PD 分离场景下，conf/config.json 的 npuDeviceIds 的长度需要和 world_size 保持一致', error
+    assert 1 <= ${world_size} and ${world_size} <= 8, 'Atlas 800I A2 服务器上，单机 PD 分离场景下，worldSize 取值范围为 1 到 8，表示每个 server 示例用到卡数', error
+
+elif ${context::deploy_mode} == 'pd_disaggregation' and ${context::npu_type} == 'A2':
+    assert int(${dp}) * int(${tp}) * int(${cp}) * int(${pp}) == int(${world_size}), '并行策略要求保证 dp * tp * cp * pp = worldSize，其中没配置的并行策略默认值为 1', error
+    assert ${pp} == 1, 'Atlas 800I A2 服务器上，多机 PD 分离场景下，conf/config.json 的 pp 取值只能等于 1', error
+    assert ${sp} in [1, ${tp}], 'Atlas 800I A2 服务器上，多机 PD 分离场景下，conf/config.json 的 sp 取值只能等于 1 或者等于 tp 取值', error
+    assert ${ServerConfig.httpsEnabled} == false, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+    assert ${ServerConfig.inferMode} == 'dmi', '多机 PD 分离场景下，conf/config.json 的 inferMode 应该是 dmi', error
+    assert ${ServerConfig.interCommTLSEnabled} == false, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+    assert ${BackendConfig.interNodeTLSEnabled} == false, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+    assert len(${BackendConfig.npuDeviceIds[0]}) == ${world_size}, '多机 PD 分离场景下，conf/config.json 的 npuDeviceIds 的长度需要和 world_size 保持一致', error
+    assert 1 <= ${world_size} and ${world_size} <= 8, 'Atlas 800I A2 服务器上，多机 PD 分离场景下，conf/config.json 的 worldSize 取值范围为 1 到 8，表示每个 server 示例用到卡数', error
+fi
+
+---
+
+[par ms_controller]
+if ${context::deploy_mode} == 'pd_disaggregation_single_container':
+    assert ${deploy_mode} == 'pd_disaggregation_single_container', '单机 PD 分离场景下，deploy_mode 应该是 pd_disaggregation_single_container', error
+    assert ${tls_config.request_coordinator_tls_enable} == false, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+    assert ${tls_config.request_server_tls_enable} == false, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+    assert ${tls_config.http_server_tls_enable} == false, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+    assert ${tls_config.cluster_tls_enable} == false, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+    assert ${tls_config.etcd_server_tls_enable} == false, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+
+elif ${context::deploy_mode} == 'pd_disaggregation' and ${context::npu_type} == 'A2':
+    assert ${deploy_mode} in ['pd_separate', 'pd_disaggregation'], 'Atlas 800I A2 服务器上，多机 PD 分离场景下，conf/ms_controller.json 的 deploy_mode 应该是 pd_separate 或 pd_disaggregation', error
+    assert ${tls_config.request_coordinator_tls_enable} == false, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+    assert ${tls_config.request_server_tls_enable} == false, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+    assert ${tls_config.http_server_tls_enable} == false, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+    assert ${tls_config.cluster_tls_enable} == false, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+    assert ${tls_config.etcd_server_tls_enable} == false, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+fi
+
+---
+
+[par ms_coordinator]
+if ${context::deploy_mode} == 'pd_disaggregation_single_container':
+    assert ${digs_scheduler_config.deploy_mode} == 'pd_disaggregation_single_container', '单机 PD 分离场景下，conf/ms_coordinator.json 下的 deploy_mode 应该是 pd_disaggregation_single_container', error
+    assert ${tls_config.controller_server_tls_enable} == false, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+    assert ${tls_config.request_server_tls_enable} == false, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+    assert ${tls_config.mindie_client_tls_enable} == false, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+    assert ${tls_config.mindie_mangment_tls_enable} == false, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+
+elif ${context::deploy_mode} == 'pd_disaggregation' and ${context::npu_type} == 'A2':
+    assert ${digs_scheduler_config.deploy_mode} in ['pd_separate', 'pd_disaggregation'], 'Atlas 800I A2 服务器上，多机 PD 分离场景下，conf/ms_coordinator.json 下的 deploy_mode 应该是 pd_separate 或 pd_disaggregation', error
+    assert ${tls_config.controller_server_tls_enable} == false, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+    assert ${tls_config.request_server_tls_enable} == false, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+    assert ${tls_config.mindie_client_tls_enable} == false, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+    assert ${tls_config.mindie_mangment_tls_enable} == false, '如果确实配置了安全证书，建议开启为 true，此条校验为提示', info
+fi
+
+---
+
+[par mindie_service_single_container]
+if ${context::deploy_mode} == 'pd_disaggregation_single_container' and ${context::npu_type} == 'A2':
+    assert 1 <= ${world_size} and ${world_size} <= 8, 'Atlas 800I A2 服务器上，单机 PD 分离场景下，conf/config.json worldSize 取值范围为 1 到 8', error
+    
+    if ${d_rate} == '0':
+        assert ${p_rate} == ${d_rate}, '单机 PD 分离场景下，MINDIE_MS_P_RATE 和 MINDIE_MS_D_RATE 需要同时为 0 ，表示 PD 配比自动计算；或者同时不为 0，由用户指定具体配比', error
+    else:
+        assert int(${p_rate}) + int(${d_rate}) <= int(${global::npu_count}), '单机 PD 分离场景下，MINDIE_MS_P_RATE 和 MINDIE_MS_D_RATE 之和不能大于单机 NPU 总卡数', error
+    fi
+    
+    assert path_exists(${host_model_path}), '单机 PD 分离场景下，deployment/mindie_service_single_container.yaml 中，model-path 挂载的宿主机路径需要存在', error
+    assert path_exists(${container_model_path}), '单机 PD 分离场景下，deployment/mindie_service_single_container.yaml 中，model-path 挂载的宿主机路径需要存在', error
+    assert ${[1].spec.replicas} == 1, '表示拉起的 pod 数，单机 PD 分离中 P 和 D 的 server 实例在同 pod 中，该值需要等于 1', error
+    assert ${ms_config::world_size} <= ${[1].spec.template.spec.containers[0].resources.requests.huawei.com/Ascend910} and ${[1].spec.template.spec.containers[0].resources.requests.huawei.com/Ascend910} <= 8, '单机 PD 分离场景下，huawei.com/Ascend910 应该大于等于 conf/config.json 中的 worldSize 且小于等于 8', error
+    assert ${ms_config::world_size} <= ${[1].spec.template.spec.containers[0].resources.limits.huawei.com/Ascend910} and ${[1].spec.template.spec.containers[0].resources.limits.huawei.com/Ascend910} <= 8, '单机 PD 分离场景下，huawei.com/Ascend910 应该大于等于 conf/config.json 中的 worldSize 且小于等于 8', error
+    assert ${MINDIE_LOG_LEVEL} in ['INFO', 'info'], '单机 PD 分离场景下，MINDIE 日志等级建议设置为 INFO 或 info', info
+    assert ${MINDIE_LOG_TO_FILE} in ['1', 'true'], '单机 PD 分离场景下，建议将 MindIE 日志写入文件，便于排查问题', info
+    assert ${MINDIE_LOG_TO_STDOUT} in ['1', 'true'], '单机 PD 分离场景下，建议将 MindIE 日志打屏，便于通过查看 k8s 日志查看程序运行状态', info
+    assert ${MINDIE_MS_GEN_SERVER_PORT} in ['true', 'false'], '单机 PD 分离场景下，MINDIE_MS_GEN_SERVER_PORT 应该是 true 或 false，表示是否自动生成多个 server 示例端口', error
+fi
+
+---
+
+[par mindie_service_single_container_base_A3]
+if ${context::deploy_mode} == 'pd_disaggregation_single_container' and ${context::npu_type} == 'A3':
+    assert 1 <= ${world_size} and ${world_size} <= 16, 'Atlas 800I A3 服务器上，单机 PD 分离场景下，conf/config.json 的 worldSize 取值范围为 1 到 16', error
+    
+    if ${d_rate} == '0':
+        assert ${p_rate} == ${d_rate}, '单机 PD 分离场景下，MINDIE_MS_P_RATE 和 MINDIE_MS_D_RATE 需要同时为 0 ，表示 PD 配比自动计算；或者同时不为 0，由用户指定具体配比', error
+    else:
+        assert int(${p_rate}) + int(${d_rate}) <= int(${global::npu_count}), '单机 PD 分离场景下，MINDIE_MS_P_RATE 和 MINDIE_MS_D_RATE 之和不能大于单机 NPU 总卡数', error
+    fi
+    
+    assert path_exists(${host_model_path}), '单机 PD 分离场景下，deployment/mindie_service_single_container_base_A3.yaml 中，model-path 挂载的宿主机路径需要存在', error
+    assert path_exists(${container_model_path}), '单机 PD 分离场景下，deployment/mindie_service_single_container_base_A3.yaml 中，model-path 挂载的宿主机路径需要存在', error
+    assert ${[1].metadata.annotations.sp-block} == str(${[1].spec.template.spec.containers[0].resources.requests.huawei.com/Ascend910}), 'sp-block 表示 super-pod 块大小，指代虚拟超节点的 NPU 数量，应该等于 huawei.com/Ascend910 的值', error
+    assert ${[1].spec.replicas} == 1, '表示拉起的 pod 数，单机 PD 分离中 P 和 D 的 server 实例在同 pod 中，该值需要等于 1', error
+    assert ${ms_config::world_size} <= ${[1].spec.template.spec.containers[0].resources.requests.huawei.com/Ascend910} and ${[1].spec.template.spec.containers[0].resources.requests.huawei.com/Ascend910} <= 16, '单机 PD 分离场景下，huawei.com/Ascend910 应该大于等于 conf/config.json 中的 worldSize 且小于等于 16', error
+    assert ${ms_config::world_size} <= ${[1].spec.template.spec.containers[0].resources.limits.huawei.com/Ascend910} and ${[1].spec.template.spec.containers[0].resources.requests.huawei.com/Ascend910} <= 16, '单机 PD 分离场景下，huawei.com/Ascend910 应该大于等于 conf/config.json 中的 worldSize 且小于等于 16', error
+    assert ${MINDIE_LOG_LEVEL} in ['INFO', 'info'], '单机 PD 分离场景下，MINDIE 日志等级建议设置为 INFO 或 info', info
+    assert ${MINDIE_LOG_TO_FILE} in ['1', 'true'], '单机 PD 分离场景下，建议将 MindIE 日志写入文件，便于排查问题', info
+    assert ${MINDIE_LOG_TO_STDOUT} in ['1', 'true'], '单机 PD 分离场景下，建议将 MindIE 日志打屏，便于通过查看 k8s 日志查看程序运行状态', info
+    assert ${MINDIE_MS_GEN_SERVER_PORT} in ['true', 'false'], '单机 PD 分离场景下，MINDIE_MS_GEN_SERVER_PORT 应该是 true 或 false，表示是否自动生成多个 server 示例端口', error
+fi
+
+---
+
+[par mindie_server]
+if ${context::deploy_mode} == 'pd_disaggregation' and ${context::npu_type} == 'A2':
+    assert ${[1].spec.replicas} >= 2, '表示拉起的 pod 数，因为至少存在一个 P 节点和一个 D 节点，不能小于 2', error
+    assert ${[1].spec.template.spec.containers[0].resources.requests.huawei.com/Ascend910} == ${ms_config::world_size}, 'Atlas 800I A2 环境上，多机 PD 分离场景下，deployment/mindie_server.yaml 的 huawei.com/Ascend910 应该等于 config/config.json 中 worldSize', error
+    assert ${[1].spec.template.spec.containers[0].resources.limits.huawei.com/Ascend910} == ${ms_config::world_size}, 'Atlas 800I A2 环境上，多机 PD 分离场景下，deployment/mindie_server.yaml 的 huawei.com/Ascend910 应该等于 config/config.json 中 worldSize', error
+    assert ${MINDIE_LOG_LEVEL_server} in ['INFO', 'info'], '多机机 PD 分离场景下，MINDIE 日志等级建议设置为 INFO 或 info', info
+    assert ${MINDIE_LOG_TO_FILE_server} in ['1', 'true'], '单机 PD 分离场景下，建议将 MindIE 日志写入文件，便于排查问题', info
+    assert ${MINDIE_LOG_TO_STDOUT_server} in ['1', 'true'], '单机 PD 分离场景下，建议将 MindIE 日志打屏，便于通过查看 k8s 日志查看程序运行状态', info
+fi
+
+---
+
+[par mindie_ms_coordinator]
+if ${context::deploy_mode} == 'pd_disaggregation' and ${context::npu_type} == 'A2':
+    assert ${MINDIE_LOG_LEVEL_coordinator} in ['INFO', 'info'], '单机 PD 分离场景下，MINDIE 日志等级建议设置为 INFO 或 info', info
+    assert ${MINDIE_LOG_TO_FILE_coordinator} in ['1', 'true'], '单机 PD 分离场景下，建议将 MindIE 日志写入文件，便于排查问题', info
+    assert ${MINDIE_LOG_TO_STDOUT_coordinator} in ['1', 'true'], '单机 PD 分离场景下，建议将 MindIE 日志打屏，便于通过查看 k8s 日志查看程序运行状态', info
+fi
+
+---
+
+[par mindie_ms_controller]
+if ${context::deploy_mode} == 'pd_disaggregation' and ${context::npu_type} == 'A2':
+    assert ${MINDIE_LOG_LEVEL_controller} in ['INFO', 'info'], '单机 PD 分离场景下，MINDIE 日志等级建议设置为 INFO 或 info', info
+    assert ${MINDIE_LOG_TO_FILE_controller} in ['1', 'true'], '单机 PD 分离场景下，建议将 MindIE 日志写入文件，便于排查问题', info
+    assert ${MINDIE_LOG_TO_STDOUT_controller} in ['1', 'true'], '单机 PD 分离场景下，建议将 MindIE 日志打屏，便于通过查看 k8s 日志查看程序运行状态', info
+fi
+
+---
+
+[par user_config]
+if ${context::deploy_mode} == 'ep':
+    assert int(${p_dp}) * int(${p_tp}) * int(${p_cp}) * int(${p_pp}) == int(${single_p_instance_pod_num}) * int(${p_pod_npu_num}), 'P 实例并行策略要求保证 dp * tp * cp * pp = p_pod_npu_num * single_p_instance_pod_num，其中没配置的并行策略默认值为 1', error
+    assert ${p_pp} == 1, 'P 实例并行策略中，pp 取值只能等于 1', error
+    assert ${p_sp} in [1, ${p_tp}], 'P 实例并行策略中，sp 取值只能等于 1 或者等于 tp 取值', error
+    assert int(${p_moe_ep}) * int(${p_moe_tp}) == int(${single_p_instance_pod_num}) * int(${p_pod_npu_num}), 'P 实例并行策略中，专家并行策略需要满足 moe_ep * moe_tp = p_pod_npu_num * single_p_instance_pod_num，其中没配置的并行策略默认值为 1', error
+    assert ${d_tp} == 1 and ${d_cp} == 1 and ${d_pp} == 1 and ${d_sp} == 1 and ${d_dp} == int(${single_d_instance_pod_num}) * int(${d_pod_npu_num}), 'D 实例并行策略要求保证 dp = d_pod_npu_num * single_d_instance_pod_num, tp = 1, cp = 1, pp = 1, sp = 1，其中没配置的并行策略默认值为 1', error
+    assert ${d_moe_ep} == int(${single_d_instance_pod_num}) * int(${d_pod_npu_num}) and ${d_moe_tp} == 1, 'D 实例并行策略中，专家并行策略需要满足 moe_ep = d_pod_npu_num * single_d_instance_pod_num, moe_tp = 1，其中没配置的并行策略默认值为 1', error
+    
+    if ${max_seq_len} <= 18000:
+        assert ${p_dp} == 2 and ${p_tp} == 8 and ${p_sp} == 1, 'maxSeqLen 小于等于 18000 时，P 实例并行策略建议设置为：dp = 2, tp = 8, sp = 1，其中没配置的并行策略默认值为 1', info
+    else:
+        assert ${p_cp} == 2 and ${p_tp} == 8 and ${p_sp} == 8, 'maxSeqLen 大于 18000 时，D 实例并行策略建议设置为：cp = 2, tp = 8, sp = 8，其中没配置的并行策略默认值为 1', info
+    fi
+    
+    assert ${deploy_config.p_instances_num} >= 1, 'p_instances_num 应该大于等于 1', error
+    assert ${deploy_config.d_instances_num} >= 1, 'd_instances_num 应该大于等于 1', error
+    assert ${deploy_config.decode_distribute_enable} == 1, 'decode_distribute_enable 应该是 1', error
+    assert ${mindie_ms_controller_config.deploy_mode} in ['pd_separate', 'pd_disaggregation'], 'deploy_mode应该是pd_separate或pd_disaggregation', error
+    assert ${mindie_ms_controller_config.digs_prefill_slo} == 1000, 'digs_prefill_slo 建议值为 1000', info
+    assert ${mindie_ms_controller_config.digs_decode_slo} == 50, 'digs_decode_slo 建议值为 50', info
+    assert ${mindie_ms_controller_config.multi_node_infer_config.multi_node_infer_enable} == true, 'multi_node_infer_enable 应该是 true', error
+    assert ${mindie_ms_coordinator_config.http_config.http_timeout_seconds} == 10, 'http_timeout_seconds 建议值为 10，表示 coordinator 侧 HTTP 通信超时时间', info
+    assert ${mindie_ms_coordinator_config.http_config.keep_alive_seconds} == 180, 'keep_alive_seconds 建议值为 180，表示 coordinator 侧长链接的保活检查时间', info
+    assert ${mindie_ms_coordinator_config.request_limit.single_node_max_requests} == 4096, 'single_node_max_requests 建议设置为 4096，表示单个 server 节点可处理的最大请求数', warning
+    assert ${mindie_ms_coordinator_config.request_limit.max_requests} >= int(${mindie_ms_coordinator_config.request_limit.single_node_max_requests}) * int(${deploy_config.p_instances_num}) + 1000, 'max_requests 建议满足 p_instances_num * single_node_max_requests + 1000，表示可处理的最大请求数', warning
+    
+    if 0 <= ${mindie_ms_coordinator_config.exception_config.first_token_timeout} and ${mindie_ms_coordinator_config.exception_config.first_token_timeout} <= 3600:
+        assert ${mindie_ms_coordinator_config.exception_config.first_token_timeout} >= 600, 'first_token_timeout 建议设置大于等于 600，且不超过 3600（需要关闭超时时间限制可以设置为 0），该参数设置过小可能导致请求超时', info
+    else:
+        assert false, 'first_token_timeout 取值范围为 [0, 3600]，0 表示不限制超时时间，建议设置大于等于 600', error
+    fi
+    
+    if 0 <= ${mindie_ms_coordinator_config.exception_config.infer_timeout} and ${mindie_ms_coordinator_config.exception_config.infer_timeout} <= 65535:
+        assert ${mindie_ms_coordinator_config.exception_config.infer_timeout} >= 0.05 * ${max_seq_len}, 'infer_timeout 建议设置大于等于 0.05 * max_seq_len，且不超过 65535（需要关闭超时时间限制可以设置为0），该参数设置过小可能导致请求超时', info
+    else:
+        assert false, 'infer_timeout 取值范围为 [0, 65535]，0 表示不限制超时时间', error
+    fi
+    
+    # P 节点配置检查
+    assert ${mindie_server_prefill_config.ServerConfig.maxLinkNum} == 4096, 'maxLinkNum 建议设置为 4096，表示 EndPoint 的最大并发请求处理数', info
+    assert ${mindie_server_prefill_config.ServerConfig.inferMode} == 'dmi', 'inferMode 在 PD 分离场景应该是 dmi', error
+    
+    if 0 <= ${mindie_server_prefill_config.ServerConfig.tokenTimeout} and ${mindie_server_prefill_config.ServerConfig.tokenTimeout} <= 3600:
+        assert ${mindie_server_prefill_config.ServerConfig.tokenTimeout} >= 60, 'tokenTimeout 建议设置大于等于 60，且不超过 3600，该参数设置过小可能导致请求超时', info
+    else:
+        assert false, 'tokenTimeout 取值范围为 [0, 3600]，建议设置大于等于 60', error
+    fi
+    
+    assert 0 <= ${mindie_server_prefill_config.ServerConfig.e2eTimeout} and ${mindie_server_prefill_config.ServerConfig.e2eTimeout} <= 65535, 'e2eTimeout 取值范围为 [0, 65535]，建议设置大于等于 600', error
+    assert ${mindie_server_prefill_config.ServerConfig.e2eTimeout} >= 600, 'e2eTimeout 建议设置大于等于 600，且不超过 65535，该参数设置过小可能导致请求超时', info
+    assert ${mindie_server_prefill_config.ServerConfig.distDPServerEnabled} != NA, '该参数需要以实际 MindIE 版本配套的 user_config.json 中该参数默认值为准', warning
+    assert ${mindie_server_prefill_config.BackendConfig.tokenizerProcessNumber} == 1, 'tokenizerProcessNumber 建议设置为 1', warning
+    assert ${mindie_server_prefill_config.BackendConfig.multiNodesInferEnabled} != NA, '该参数需要以实际 MindIE 版本配套的 user_config.json 中该参数默认值为准', warning
+    assert ${mindie_server_prefill_config.BackendConfig.ModelDeployConfig.maxSeqLen} >= ${mindie_server_prefill_config.BackendConfig.ModelDeployConfig.maxInputTokenLen}, 'maxSeqLen 应该大于等于 maxInputTokenLen，表示输入 token 加输出 token 的上限', error
+    assert ${mindie_server_prefill_config.BackendConfig.ModelDeployConfig.maxInputTokenLen} >= 1, 'maxInputTokenLen 应该大于等于 1，表示输入 token 的上限', error
+    assert ${mindie_server_prefill_config.BackendConfig.ModelDeployConfig.ModelConfig[0].modelInstanceType} == 'Standard', 'modelInstanceType 应该是 Standard', error
+    assert ${mindie_server_prefill_config.BackendConfig.ModelDeployConfig.ModelConfig[0].modelCutPolicy} == 'custom', 'modelCutPolicy 需要设置为 custom', error
+    
+    if ${max_seq_len} <= 68000:
+        assert ${mindie_server_prefill_config.BackendConfig.ModelDeployConfig.ModelConfig[0].plugin_params} == '{"plugin_type":"mtp","num_speculative_tokens": 1}', '在上下文长度（maxSeqLen）在 68000 以下场景，建议开启 MTP 特性，值为 "{"plugin_type":"mtp","num_speculative_tokens": 1}"', info
+    else:
+        assert ${mindie_server_prefill_config.BackendConfig.ModelDeployConfig.ModelConfig[0].plugin_params} == NA, '在上下文长度（maxSeqLen）大于 68000 场景，由于显存不充足，建议不开启 MTP 特性，需要移除 plugin_type 中的 mtp 特性', info
+    fi
+    
+    assert ${mindie_server_prefill_config.BackendConfig.ScheduleConfig.maxPrefillBatchSize} == 16, 'maxPrefillBatchSize 建议设置为 16，表示 prefill 的最大 batch size', info
+    assert ${mindie_server_prefill_config.BackendConfig.ScheduleConfig.maxPrefillTokens} >= ${mindie_server_prefill_config.BackendConfig.ModelDeployConfig.maxInputTokenLen}, 'maxPrefillTokens 需要设置大于 maxInputTokenLen，表示 prefill 最大 token 数', error
+    
+    # D 节点配置检查
+    assert ${mindie_server_decode_config.ServerConfig.maxLinkNum} == 256, 'maxLinkNum 建议设置为 256，表示 EndPoint 的最大并发请求处理数', info
+    assert ${mindie_server_decode_config.ServerConfig.fullTextEnabled} == false, 'D 节点中 fullTextEnabled 需要设置为 false', error
+    assert ${mindie_server_decode_config.ServerConfig.inferMode} == 'dmi', 'inferMode 在 PD 分离场景应该是 dmi', error
+    assert 0 <= ${mindie_server_decode_config.ServerConfig.tokenTimeout} and ${mindie_server_decode_config.ServerConfig.tokenTimeout} <= 3600, 'tokenTimeout 取值范围为 [0, 3600]，建议设置大于等于 60', error
+    
+    if 0 <= ${mindie_server_decode_config.ServerConfig.tokenTimeout} and ${mindie_server_decode_config.ServerConfig.tokenTimeout} <= 3600:
+        assert ${mindie_server_decode_config.ServerConfig.tokenTimeout} >= 60, 'tokenTimeout 建议设置大于等于 60，且不超过 3600，该参数设置过小可能导致请求超时', info
+    else:
+        assert false, 'tokenTimeout 取值范围为 [0, 3600]，建议设置大于等于 60', error
+    fi
+    
+    assert 0 <= ${mindie_server_decode_config.ServerConfig.e2eTimeout} and ${mindie_server_decode_config.ServerConfig.e2eTimeout} <= 65535, 'e2eTimeout 取值范围为 [0, 65535]，建议设置大于等于 600', error
+    assert ${mindie_server_decode_config.ServerConfig.e2eTimeout} >= 600, 'e2eTimeout 建议设置大于等于 600，且不超过 65535，该参数设置过小可能导致请求超时', info
+    assert ${mindie_server_decode_config.ServerConfig.distDPServerEnabled} == true, 'D 节点为分布式，distDPServerEnabled 需要设置为 true', error
+    assert ${mindie_server_decode_config.BackendConfig.npuDeviceIds[0]} == [0], 'D 节点 npuDeviceIds 应该是 [[0]]', error
+    assert ${mindie_server_decode_config.BackendConfig.tokenizerProcessNumber} == 1, 'tokenizerProcessNumber 建议设置为 1', warning
+    assert ${mindie_server_decode_config.BackendConfig.multiNodesInferEnabled} == false, 'multiNodesInferEnabled 应该是 false', error
+    assert ${mindie_server_decode_config.BackendConfig.ModelDeployConfig.maxSeqLen} == ${mindie_server_prefill_config.BackendConfig.ModelDeployConfig.maxSeqLen}, 'D 节点 maxSeqLen 应该等于 P 节点 maxSeqLen', error
+    assert ${mindie_server_decode_config.BackendConfig.ModelDeployConfig.maxInputTokenLen} == ${mindie_server_prefill_config.BackendConfig.ModelDeployConfig.maxInputTokenLen}, 'D 节点 maxInputTokenLen 应该等于 P 节点 maxInputTokenLen', error
+    assert ${mindie_server_decode_config.BackendConfig.ModelDeployConfig.truncation} == false, 'D 节点中 LLM 部分的 truncation 需要设置为 false', error
+    assert ${mindie_server_decode_config.BackendConfig.ModelDeployConfig.ModelConfig[0].modelInstanceType} == 'Standard', 'modelInstanceType 应该是 Standard', error
+    assert ${mindie_server_decode_config.BackendConfig.ModelDeployConfig.ModelConfig[0].worldSize} == 1, 'worldSize 应该是 1', error
+    assert ${mindie_server_decode_config.BackendConfig.ModelDeployConfig.ModelConfig[0].modelCutPolicy} == 'custom', 'modelCutPolicy 需要设置为 custom', error
+    
+    if ${max_seq_len} <= 68000:
+        assert ${mindie_server_decode_config.BackendConfig.ModelDeployConfig.ModelConfig[0].plugin_params} == '{"plugin_type":"mtp","num_speculative_tokens": 1}', '在上下文长度（maxSeqLen）在 68000 以下场景，建议开启 MTP 特性，值为 "{"plugin_type":"mtp","num_speculative_tokens": 1}"', info
+    else:
+        assert ${mindie_server_decode_config.BackendConfig.ModelDeployConfig.ModelConfig[0].plugin_params} == NA, '在上下文长度（maxSeqLen）大于 68000 场景，由于显存不充足，建议不开启 MTP 特性，需要移除 plugin_type 中的 mtp 特性', info
+    fi
+    
+    assert ${mindie_server_decode_config.BackendConfig.ModelDeployConfig.ModelConfig[0].models.deepseekv2.ep_level} == 2, 'ep_level 应该是 2', error
+    assert ${mindie_server_decode_config.BackendConfig.ModelDeployConfig.ModelConfig[0].models.deepseekv2.parallel_options.hccl_moe_tp_buffer} == 64, 'hccl_moe_tp_buffer 推荐设置为 64', info
+    assert ${mindie_server_decode_config.BackendConfig.ScheduleConfig.distributedEnable} == true, 'distributedEnable 应该是 true', error
+    assert ${mindie_server_decode_config.BackendConfig.ScheduleConfig.maxBatchSize} == 64, 'maxBatchSize 建议设置为 64，表示 decode 的最大 batch size', info
+    assert 1 <= ${mindie_server_decode_config.BackendConfig.ScheduleConfig.maxIterTimes} and ${mindie_server_decode_config.BackendConfig.ScheduleConfig.maxIterTimes} <= ${mindie_server_decode_config.BackendConfig.ModelDeployConfig.maxSeqLen}, 'maxIterTimes 应该大于等于 1 小于等于 maxSeqLen', error
+    assert ${mindie_server_decode_config.BackendConfig.ScheduleConfig.maxQueueDelayMicroseconds} == 5000, 'maxQueueDelayMicroseconds 建议设置为 5000，表示 LLM 模块的队列等待时间，可根据实际场景调整', info
+
+    # 硬件特定配置
+    if ${context::npu_type} == 'A2':
+        if ${context::arch} == 'arm':
+            assert ${deploy_config.single_p_instance_pod_num} >= 2, 'single_p_instance_pod_num A2 场景应该大于等于 2', error
+            assert ${deploy_config.single_d_instance_pod_num} >= 4, 'single_d_instance_pod_num A2 场景应该大于等于 4', error
+            assert ${deploy_config.p_pod_npu_num} == 8, 'p_pod_npu_num A2 场景应该是 8', error
+            assert ${deploy_config.d_pod_npu_num} == 8, 'd_pod_npu_num 应该是 8', error
+            assert ${deploy_config.hardware_type} == '800I_A2', 'A2 场景应该是 800I_A2，在版本配套的 config 没有 hardware_type 字段时忽略此检查', warning
+            assert ${mindie_server_prefill_config.BackendConfig.npuDeviceIds[0]} == [0, 1, 2, 3, 4, 5, 6, 7], 'A2 场景 P 节点中 npuDeviceIds 应该设置为 [[0, 1, 2, 3, 4, 5, 6, 7]]', error
+            assert ${mindie_server_prefill_config.BackendConfig.ModelDeployConfig.ModelConfig[0].worldSize} == 8, 'A2 场景 P 节点中 worldSize 应该是 8', error
+            
+            if ${max_seq_len} <= 18000:
+                assert ${p_moe_ep} == 4 and ${p_moe_tp} == 4, 'maxSeqLen 小于等于 18000 时，P 实例专家并行策略建议设置为：moe_ep = 4, moe_tp = 4, 其中没配置的并行策略默认值为 1', info
+            else:
+                assert ${p_moe_ep} == 16 and ${p_moe_tp} == 1, 'maxSeqLen 大于 18000 时，P 实例专家并行策略建议设置为：moe_ep = 16, moe_tp = 1, 其中没配置的并行策略默认值为 1', info
+            fi
+            
+            assert ${deploy_config.prefill_distribute_enable} == NA, '该参数需要以实际 MindIE 版本配套的 user_config.json 中该参数默认值为准', warning
+            assert ${mindie_server_decode_config.BackendConfig.ModelDeployConfig.ModelConfig[0].models.deepseekv2.parallel_options.hccl_moe_ep_buffer} == 1152, 'hccl_moe_ep_buffer 推荐设置为 1152，需要依据 D 节点 maxBatchSize 值动态调整', info
+            
+        elif ${context::arch} == 'x86':
+            assert ${deploy_config.single_p_instance_pod_num} >= 1, 'single_p_instance_pod_num G8600 场景应该大于等于 1', error
+            assert ${deploy_config.single_d_instance_pod_num} >= 2, 'single_d_instance_pod_num G8600 场景应该大于等于 2', error
+            assert ${deploy_config.p_pod_npu_num} == 16, 'p_pod_npu_num G8600 场景应该是 16', error
+            assert ${deploy_config.d_pod_npu_num} == 16, 'd_pod_npu_num G8600 场景应该是 16', error
+            assert ${deploy_config.hardware_type} == '800I_G8600', 'G8600 场景应该是 800I_G8600，在版本配套的 config 没有 hardware_type 字段时忽略此检查', warning
+            assert ${mindie_server_prefill_config.BackendConfig.npuDeviceIds[0]} == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], 'G8600 场景 P 节点中 npuDeviceIds 应该设置为 [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]]', error
+            assert ${mindie_server_prefill_config.BackendConfig.ModelDeployConfig.ModelConfig[0].worldSize} == 16, 'G8600 场景 P 节点的 worldSize 应该是 16', error
+        fi
+        
+    elif ${context::npu_type} == 'A3':
+        assert ${p_moe_ep} == 16 and ${p_moe_tp} == 1, '在 Atlas 800I A3 环境上部署 Deepseek 大规模专家并行，P 实例专家并行策略建议设置为：moe_ep = 16, moe_tp = 1, 其中没配置的并行策略默认值为 1', info
+        assert ${deploy_config.single_p_instance_pod_num} >= 1, 'single_p_instance_pod_num A3 场景应该大于等于 1', error
+        assert ${deploy_config.single_d_instance_pod_num} >= 2, 'single_d_instance_pod_num A3 场景应该大于等于 2', error
+        assert ${deploy_config.p_pod_npu_num} == 16, 'p_pod_npu_num A3 场景应该是 16', error
+        assert ${deploy_config.d_pod_npu_num} == 16, 'd_pod_npu_num A3 场景应该是 16', error
+        assert ${deploy_config.prefill_distribute_enable} == NA, '该参数需要以实际 MindIE 版本配套的 user_config_a3.json 中该参数默认值为准', warning
+        assert ${deploy_config.hardware_type} == '800I_A3', 'A3 场景应该是 800I_A3，在版本配套的 config 没有 hardware_type 字段时忽略此检查', warning
+        assert ${deploy_config.mindie_env_path} == './conf/mindie_env_a3.json', 'A3 场景默认应该是 ./conf/mindie_env_a3.json，在版本配套的 config 没有 mindie_env_path 字段时忽略此检查', info
+        assert ${mindie_server_prefill_config.BackendConfig.npuDeviceIds[0]} == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], 'A3 场景 P 节点中 npuDeviceIds 应该设置为 [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]]', error
+        assert ${mindie_server_prefill_config.BackendConfig.ModelDeployConfig.ModelConfig[0].worldSize} == 16, 'A3 场景 P 节点的 worldSize 应该是 16', error
+        assert ${mindie_server_prefill_config.BackendConfig.ModelDeployConfig.ModelConfig[0].models.deepseekv2.ep_level} == 2, 'A3 场景下，P 节点模型的 ep_level 应该为 2', error
+        assert ${mindie_server_prefill_config.BackendConfig.ScheduleConfig.dpScheduling} == true, 'A3 场景下，P 节点的 dpScheduling 需要设置为 true', error
+        assert ${mindie_server_decode_config.BackendConfig.ModelDeployConfig.ModelConfig[0].models.deepseekv2.parallel_options.hccl_moe_ep_buffer} == 4096, 'hccl_moe_ep_buffer 推荐设置为 4096，需要依据 D 节点 maxBatchSize 值动态调整', info
+    fi
+fi
+
+---
+
+[par mindie_env]
+if ${context::deploy_mode} == 'ep':
+    assert ${mindie_common_env.CANN_INSTALL_PATH} == '/usr/local/Ascend', 'MindIE 官方镜像中默认 CANN 的安装路径为 /usr/local/Ascend', info
+    assert ${mindie_common_env.MIES_INSTALL_PATH} == '/usr/local/Ascend/mindie/latest/mindie-service', 'MindIE 官方镜像中默认MindIE Service 的安装路径为 /usr/local/Ascend/mindie/latest/mindie-service', info
+    assert ${mindie_common_env.MINDIE_LLM_HOME_PATH} == '/usr/local/Ascend/mindie/latest/mindie-llm', 'MindIE 官方镜像中默认 MindIE LLM 的安装路径为 /usr/local/Ascend/mindie/latest/mindie-llm', info
+    assert ${mindie_common_env.TASK_QUEUE_ENABLE} == 1, '开启 task_queue 算子下发队列 Level 1 优化', error
+    assert ${mindie_common_env.HCCL_BUFFSIZE} == 120, '用于控制两个 NPU 之间共享数据的缓存区大小，HCCL_BUFFSIZE 建议设置为 120', info
+    assert ${mindie_common_env.MINDIE_LOG_TO_FILE} in ['1', 'true'], '建议将 MindIE 日志输出到文件，便于后续查看和分析', info
+    assert ${mindie_common_env.MINDIE_LOG_TO_STDOUT} in ['1', 'true'], '建议将 MindIE 日志打屏，便于通过查看 k8s 日志查看程序运行状态', info
+    assert ${mindie_common_env.MINDIE_LOG_LEVEL} in ['info', 'INFO'], '建议将 MindIE 日志级别设置为 INFO，不影响执行效率且能提供必要的日志信息', info
+    assert ${mindie_common_env.ASCEND_SLOG_PRINT_TO_STDOUT} == 0, '建议关闭 CANN 日志打屏，避免影响运行效率', info
+    assert ${mindie_common_env.ASCEND_GLOBAL_LOG_LEVEL} == 3, '建议将 CANN 日志级别设置为 3，对应 ERROR 级别', info
+    assert ${mindie_common_env.ASCEND_GLOBAL_EVENT_ENABLE} == 1, '建议开启 CANN 的 Event 日志', info
+    assert ${mindie_common_env.ATB_LOG_TO_FILE} == 0, '不建议开启加速库日志输出文件，如需要定位问题可开启', info
+    assert ${mindie_common_env.ASDOPS_LOG_TO_STDOUT} == 0, '不建议开启算子库日志打屏，如需要定位问题可开启', info
+    assert ${mindie_common_env.ASDOPS_LOG_LEVEL} == 'ERROR', '建议将算子库日志级别设置为 ERROR，不影响执行效率且能提供必要的日志信息', info
+    assert ${mindie_common_env.MINDIE_LLM_CONTINUOUS_BATCHING} == 1, '需要开启 MindIE LLM 连续 batching 特性', error
+    assert ${mindie_common_env.MINDIE_LLM_RECOMPUTE_THRESHOLD} == 0.5, '建议将 MindIE LLM 重计算阈值设置为 0.5', info
+    assert ${mindie_common_env.DIST_PD_DISAGGREGATION} == 1, '需要开启分布式 PD 分离特性', error
+    assert 0 <= ${mindie_common_env.HCCL_EXEC_TIMEOUT} and ${mindie_common_env.HCCL_EXEC_TIMEOUT} <= 2147483647, 'HCCL执行超时时间合法范围为[0, 2147483647]，设置为 0 表示不限制超时', error
+    
+    # P 节点环境变量检查
+    assert ${mindie_server_prefill_env.PYTORCH_NPU_ALLOC_CONF} == 'expandable_segments:True', '需要开启 torch_npu 虚拟内存机制', error
+    assert ${mindie_server_prefill_env.OMP_NUM_THREADS} == 8, 'OpenMP 并行数建议设置为 8', info
+    assert ${mindie_server_prefill_env.HCCL_CONNECT_TIMEOUT} == 7200, 'HCCL 建链超时时间建议设置为 7200 秒', error
+    assert ${mindie_server_prefill_env.HCCL_ENTRY_LOG_ENABLE} == 1, 'HCCL 通信算子调用行为日志，建议开启，便于后续排查问题', info
+    assert ${mindie_server_prefill_env.DP_MOVE_UP_ENABLE} == 1, '需要开启该特性，padding 构造从组图上移至 mindie-llm 侧', error
+    assert ${mindie_server_prefill_env.HCCL_OP_EXPANSION_MODE} == 'AIV', 'HCCL_OP_EXPANSION_MODE 建议设置为 AIV，设置通信算法的编排展开位置在 Device 侧的 AI Vector Core 计算单元', error
+    assert ${mindie_server_prefill_env.NPU_MEMORY_FRACTION} == 0.92, 'NPU 显存比建议设置为 0.92，可根据实际业务场景加大，出现 out of memory 时可以尝试调大该值', info
+    
+    # D 节点环境变量检查
+    assert ${mindie_server_decode_env.PYTORCH_NPU_ALLOC_CONF} == 'expandable_segments:True', '需要开启 torch_npu 虚拟内存机制', error
+    assert ${mindie_server_decode_env.OMP_NUM_THREADS} == 8, 'OpenMP 并行数建议设置为 8', info
+    assert ${mindie_server_decode_env.HCCL_CONNECT_TIMEOUT} == 7200, 'HCCL 建链超时时间建议设置为 7200 秒', error
+    assert ${mindie_server_decode_env.HCCL_ENTRY_LOG_ENABLE} == 1, 'HCCL 通信算子调用行为日志，建议开启，便于后续排查问题', info
+    assert ${mindie_server_decode_env.DP_MOVE_UP_ENABLE} == 1, '需要开启该特性，padding 构造从组图上移至 mindie-llm 侧', error
+    assert ${mindie_server_decode_env.MINDIE_ASYNC_SCHEDULING_ENABLE} == 1, '建议开启 MindIE 异步调度特性', info
+    assert ${mindie_server_decode_env.NPU_MEMORY_FRACTION} == 0.92, 'NPU 显存比建议设置为 0.92，可根据实际业务场景加大，出现 out of memory 时可以尝试调大该值', info
+    assert ${mindie_server_decode_env.MINDIE_ENABLE_DP_DISTRIBUTED} == 1, 'PD 分离特性下 D 节点需要开启分布式调度', error
+    assert ${mindie_server_decode_env.DP_PARTITION_UP_ENABLE} == 1, '需要开启此特性，模型侧控制 dp 进 dp 出', error
+    assert ${mindie_server_decode_env.ATB_LAYER_INTERNAL_TENSOR_REUSE} == 1, '需要开启 Layer 间的中间 Tensor 复用', error
+    assert ${mindie_server_decode_env.ATB_CONVERT_NCHW_TO_ND} == 1, '需要开启将 Tensor 格式从 NCHW 转换为 ND 格式', error
+    assert ${mindie_server_decode_env.ATB_CONTEXT_WORKSPACE_SIZE} == 0, '不预先设置 workspace 大小，后续会根据实际需要动态申请', error
+    assert ${mindie_server_decode_env.ATB_LAUNCH_KERNEL_WITH_TILING} == 1, '需要开启 Tiling data 拷贝随算子下发功能', error
+    assert ${mindie_server_decode_env.ATB_LLM_ENABLE_AUTO_TRANSPOSE} == 0, '不能开启权重右矩阵自动转置', error
+    assert ${mindie_server_decode_env.ATB_LLM_HCCL_ENABLE} == 1, '需要开启 HCCL 通信后端', error
+    assert ${mindie_server_decode_env.TASK_QUEUE_ENABLE} == 1, '开启 task_queue 算子下发队列 Level 1 优化', error
+    assert ${mindie_server_decode_env.INF_NAN_MODE_ENABLE} == 0, '不开启此变量，对溢出值进行截断', error
+    assert ${mindie_server_decode_env.HCCL_INTRA_PCIE_ENABLE} == 1, '建议设置为 1，开启 HCCL 的 PCIe 通信，需要配合 HCCL_INTRA_ROCE_ENABLE 一同设置', info
+    assert ${mindie_server_decode_env.HCCL_INTRA_ROCE_ENABLE} == 0, '建议设置为 0，关闭 HCCL 的 RoCE 通信，需要配合 HCCL_INTRA_PCIE_ENABLE 一同设置', info
+
+    # 硬件特定环境变量检查
+    if ${context::npu_type} == 'A2':
+        if ${context::arch} == 'arm':
+            assert ${mindie_server_decode_env.HCCL_BUFFSIZE} == 512, '用于控制两个 NPU 之间共享数据的缓存区大小，分布式 D 节点的 HCCL_BUFFSIZE 建议设置为 512', info
+        elif ${context::arch} == 'x86':
+            assert ${mindie_server_decode_env.HCCL_BUFFSIZE} == 512, '用于控制两个 NPU 之间共享数据的缓存区大小，分布式 D 节点的 HCCL_BUFFSIZE 建议设置为 512', info
+            assert ${mindie_server_decode_env.HCCL_INTRA_PCIE_ENABLE} == 1, '建议设置为 1，开启 HCCL 的 PCIe 通信，需要配合 HCCL_INTRA_ROCE_ENABLE 一同设置', info
+            assert ${mindie_server_decode_env.HCCL_INTRA_ROCE_ENABLE} == 0, '建议设置为 0，关闭 HCCL 的 RoCE 通信，需要配合 HCCL_INTRA_PCIE_ENABLE 一同设置', info
+        fi
+    elif ${context::npu_type} == 'A3':
+        assert ${mindie_server_decode_env.HCCL_BUFFSIZE} == 4096, '用于控制两个 NPU 之间共享数据的缓存区大小，A3 场景分布式 D 节点的 HCCL_BUFFSIZE 建议设置为 4096', info
+        assert ${mindie_server_decode_env.HCCL_INTRA_PCIE_ENABLE} == 1, '建议设置为 1，开启 HCCL 的 PCIe 通信，需要配合 HCCL_INTRA_ROCE_ENABLE 一同设置', info
+        assert ${mindie_server_decode_env.HCCL_INTRA_ROCE_ENABLE} == 0, '建议设置为 0，关闭 HCCL 的 RoCE 通信，需要配合 HCCL_INTRA_PCIE_ENABLE 一同设置', info
+    fi
+fi

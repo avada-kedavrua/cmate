@@ -1,0 +1,20 @@
+[metadata]
+name = 'VLLM-Ascend 配置项检查'
+version = '1.0'
+authors = [{"name": "liujiawang", "email": "anonymousdev@163.com"}, {"name": "yinqian"}]
+description = 'VLLM-Ascend 检查，支持通用场景、PD分离场景的环境变量验证'
+
+---
+
+[par env]
+assert ${OMP_PROC_BIND} == 'false', 'OpenMP 多线程绑核配置性能', info
+assert ${OMP_NUM_THREADS} == '10', 'OpenMP 并行数建议设置为 10', info
+assert ${PYTORCH_NPU_ALLOC_CONF} == 'expandable_segments:True', '建议开启 torch_npu 虚拟内存机制', info
+assert ${HCCL_BUFFSIZE} == '1024', 'HCCL 通信缓存，PD 分离场景，建议 P 节点设置为 512，D 节点设置为 1024', info
+assert ${TASK_QUEUE_ENABLE} == '1', '建议开启 task_queue 算子下发队列 Level 1 优化', info
+assert ${VLLM_USE_V1} == '1', 'VLLM V1 engine 开关，不配置默认走 V0', error
+
+if ${context::deploy_mode} == 'ep':
+    assert ${VLLM_WORKER_MULTIPROC_METHOD} == 'fork', 'PD 分离场景下必要', error
+    assert ${VLLM_ASCEND_EXTERNAL_DP_LB_ENABLED} == '1', '分布式 DP 开关，不设置默认使用原生 DP，性能相关', info
+fi
