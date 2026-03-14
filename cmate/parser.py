@@ -306,14 +306,11 @@ class Parser:
         if len(p) == 6:
             orelse = None
         elif len(p) == 7:
-            orelse = [p[5][0]] # first elif node
+            orelse = p[5] # first elif node
         elif len(p) == 9:
             orelse = p[7]
         else:
-            orelse = [p[5][0]] # first elif node
-            while orelse.orelse:
-                orelse = orelse.orelse
-            orelse.orelse = p[8]
+            orelse = [p[5][-1]]
         p[0] = If(tok.lineno, tok.col_offset, p[2], p[4], orelse)
 
     @staticmethod
@@ -325,7 +322,6 @@ class Parser:
 
         if len(p) == 5:
             tok = p.slice[1]
-
             p[0] = [If(tok.lineno, tok.col_offset, p[2], p[4])]
         else:
             tok = p.slice[2]
@@ -444,15 +440,11 @@ class Parser:
         if len(p) == 6:
             orelse = None
         elif len(p) == 7:
-            orelse = p[5]
+            orelse = p[5] # first elif node
         elif len(p) == 9:
             orelse = p[7]
         else:
-            orelse = p[5]
-            pointer = p[5]
-            while pointer.orelse:
-                pointer = pointer.orelse
-            pointer.orelse = p[8]
+            orelse = [p[5][-1]]
         p[0] = If(tok.lineno, tok.col_offset, p[2], p[4], orelse)
 
     @staticmethod

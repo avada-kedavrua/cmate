@@ -52,7 +52,7 @@ class InfoCollector(NodeVisitor):
     def visit_meta(self, node: _ast.Meta):
         if self._metadata_map:
             cmate_logger.warning(
-                "Multiple dependency declarations found. "
+                "Multiple metadata declarations found. "
                 "Previous declaration will be overwritten."
             )
             self._metadata_map = {}
