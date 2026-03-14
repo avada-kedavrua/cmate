@@ -252,7 +252,7 @@ fi
         },
         "contexts": {
             "deploy_mode": {
-                "desc": ("部署模式标识，用于确定检查规则集", None),
+                "desc": "部署模式标识，用于确定检查规则集",
                 "options": ["pd_mix"],
             }
         },
@@ -1242,7 +1242,7 @@ assert true, 'test'
 """
     node = parser.parse(text)
     with pytest.raises(
-        CMateError, match="must be declared in \\[dependency\\] section"
+        CMateError, match="requires a \\[targets\\] or \\[dependency\\] section"
     ):
         info_collector.collect(node)
 
@@ -1448,3 +1448,155 @@ alert ${config::nested.path}, 'message'
     alert = document_node.body[1].body[0]
     result = formatter.visit_alert(alert)
     assert "config::nested.path" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests for new [targets] and [contexts] sections
+# ---------------------------------------------------------------------------
+
+
+def test_collect_targets_section_succeeds(parser, info_collector):
+    """Test that [targets] section is parsed correctly"""
+    text = """\
+[targets]
+config: 'Configuration file' @ 'json'
+data: 'Data file' @ 'yaml'
+---
+
+[par config]
+assert true, 'test'
+"""
+    node = parser.parse(text)
+    info = info_collector.collect(node)
+    assert "config" in info["targets"]
+    assert info["targets"]["config"]["desc"] == "Configuration file"
+    assert info["targets"]["config"]["parse_format"] == "json"
+
+
+def test_collect_contexts_section_succeeds(parser, info_collector):
+    """Test that [contexts] section is parsed correctly"""
+    text = """\
+[targets]
+config: 'Configuration file' @ 'json'
+---
+
+[contexts]
+mode: 'Operation mode'
+level: 'Log level'
+---
+
+[par config]
+if ${context::mode} == 'test':
+    assert true, 'test'
+fi
+"""
+    node = parser.parse(text)
+    info = info_collector.collect(node)
+    assert "mode" in info["contexts"]
+    assert info["contexts"]["mode"]["desc"] == "Operation mode"
+    assert info["contexts"]["mode"]["options"] == ["test"]
+
+
+def test_collect_multiple_targets_raises_error(parser, info_collector):
+    """Test that multiple [targets] sections raise error"""
+    text = """\
+[targets]
+config: 'first'
+---
+
+[targets]
+data: 'second'
+---
+"""
+    node = parser.parse(text)
+    with pytest.raises(
+        CMateError, match="Multiple \\[targets\\] sections not allowed"
+    ):
+        info_collector.collect(node)
+
+
+def test_collect_multiple_contexts_raises_error(parser, info_collector):
+    """Test that multiple [contexts] sections raise error"""
+    text = """\
+[targets]
+config: 'config'
+---
+
+[contexts]
+mode: 'first'
+---
+
+[contexts]
+level: 'second'
+---
+"""
+    node = parser.parse(text)
+    with pytest.raises(
+        CMateError, match="Multiple \\[contexts\\] sections not allowed"
+    ):
+        info_collector.collect(node)
+
+
+def test_collect_env_in_targets_raises_error(parser, info_collector):
+    """Test that 'env' cannot be declared in [targets] section"""
+    text = """\
+[targets]
+env: 'Environment variables' @ 'json'
+---
+"""
+    node = parser.parse(text)
+    with pytest.raises(
+        CMateError, match="'env' cannot be declared in \\[targets\\] section"
+    ):
+        info_collector.collect(node)
+
+
+def test_collect_partition_with_targets_section(parser, info_collector):
+    """Test that partition must be declared in [targets] section"""
+    text = """\
+[targets]
+config: 'Configuration file' @ 'json'
+---
+
+[par other]
+assert true, 'test'
+"""
+    node = parser.parse(text)
+    with pytest.raises(
+        CMateError, match="must be declared in \\[targets\\] section"
+    ):
+        info_collector.collect(node)
+
+
+def test_collect_context_not_in_contexts_section_raises_error(parser, info_collector):
+    """Test that context:: usage must be declared in [contexts] section"""
+    text = """\
+[targets]
+config: 'Configuration file' @ 'json'
+---
+
+[contexts]
+mode: 'Operation mode'
+---
+
+[par config]
+if ${context::undefined_context} == 'test':
+    assert true, 'test'
+fi
+"""
+    node = parser.parse(text)
+    with pytest.raises(
+        CMateError, match="Context variable 'undefined_context' is used.*not declared"
+    ):
+        info_collector.collect(node)
+
+
+def test_collect_env_partition_without_targets_section(parser, info_collector):
+    """Test that [par env] works without needing [targets] declaration"""
+    text = """\
+[par env]
+assert true, 'test'
+"""
+    node = parser.parse(text)
+    info = info_collector.collect(node)
+    assert "env" in info["targets"]

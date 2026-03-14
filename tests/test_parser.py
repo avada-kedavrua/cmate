@@ -536,14 +536,15 @@ done
 # ---------------------------------------------------------------------------
 
 
-def test_partition_given_env_name_when_parse_then_raises_error(parser):
-    """Test that 'env' is a reserved keyword and cannot be used as partition name."""
+def test_partition_given_env_name_when_parse_then_succeeds(parser):
+    """Test that 'env' is a valid partition name for environment variable validation."""
     text = """\
 [par env]
 assert true, 'test'
 """
-    with pytest.raises(ParserError, match="reserved"):
-        parser.parse(text)
+    result = parser.parse(text)
+    assert len(result.body) == 1
+    assert result.body[0].target.id == "env"
 
 
 # ---------------------------------------------------------------------------
