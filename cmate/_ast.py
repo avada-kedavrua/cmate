@@ -1,25 +1,42 @@
+# -------------------------------------------------------------------------
+# This file is part of the MindStudio project.
+# Copyright (c) 2025-2026 Huawei Technologies Co.,Ltd.
+#
+# MindStudio is licensed under Mulan PSL v2.
+# You can use this software according to the terms and conditions of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+#
+#          `http://license.coscl.org.cn/MulanPSL2`
+#
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+# -------------------------------------------------------------------------
+
+
 class Node:
     pass
 
 
 class Mod(Node):
-    __slots__ = ('body',)
-    
+    __slots__ = ("body",)
+
     def __init__(self, body):
         self.body = body
 
 
 class Stmt(Node):
-    __slots__ = ('lineno', 'col_offset')
-    
+    __slots__ = ("lineno", "col_offset")
+
     def __init__(self, lineno: int, col_offset: int):
         self.lineno = lineno
         self.col_offset = col_offset
 
 
 class Expr(Node):
-    __slots__ = ('lineno', 'col_offset')
-    
+    __slots__ = ("lineno", "col_offset")
+
     def __init__(self, lineno: int, col_offset: int):
         super().__init__()
         self.lineno = lineno
@@ -43,16 +60,16 @@ class Dependency(Mod):
 
 
 class Partition(Mod):
-    __slots__ = ('target',) + Mod.__slots__
-    
+    __slots__ = ("target",) + Mod.__slots__
+
     def __init__(self, target, body):
         super().__init__(body)
         self.target = target
 
 
 class Assign(Stmt):
-    __slots__ = ('target', 'value') + Stmt.__slots__
-    
+    __slots__ = ("target", "value") + Stmt.__slots__
+
     def __init__(self, lineno, col_offset, target, value):
         super().__init__(lineno, col_offset)
         self.target = target
@@ -60,8 +77,8 @@ class Assign(Stmt):
 
 
 class Desc(Stmt):
-    __slots__ = ('target', 'desc', 'parse_type') + Stmt.__slots__
-    
+    __slots__ = ("target", "desc", "parse_type") + Stmt.__slots__
+
     def __init__(self, lineno, col_offset, target, desc, parse_type):
         super().__init__(lineno, col_offset)
         self.target = target
@@ -70,8 +87,8 @@ class Desc(Stmt):
 
 
 class For(Stmt):
-    __slots__ = ('target', 'it', 'body') + Stmt.__slots__
-    
+    __slots__ = ("target", "it", "body") + Stmt.__slots__
+
     def __init__(self, lineno, col_offset, target, it, body):
         super().__init__(lineno, col_offset)
         self.target = target
@@ -80,8 +97,8 @@ class For(Stmt):
 
 
 class If(Stmt):
-    __slots__ = ('test', 'body', 'orelse') + Stmt.__slots__
-    
+    __slots__ = ("test", "body", "orelse") + Stmt.__slots__
+
     def __init__(self, lineno, col_offset, test, body, orelse=None):
         super().__init__(lineno, col_offset)
         self.test = test
@@ -90,14 +107,14 @@ class If(Stmt):
 
 
 class Rule(Stmt):
-    __slots__ = ('test', 'msg', 'severity') + Stmt.__slots__
-    
+    __slots__ = ("test", "msg", "severity") + Stmt.__slots__
+
     def __init__(self, lineno, col_offset, test, msg, severity):
         super().__init__(lineno, col_offset)
         self.test = test
         self.msg = msg
         self.severity = severity
-    
+
 
 class Break(Stmt):
     pass
@@ -108,8 +125,8 @@ class Continue(Stmt):
 
 
 class UnaryOp(Expr):
-    __slots__ = ('op', 'operand') + Expr.__slots__
-    
+    __slots__ = ("op", "operand") + Expr.__slots__
+
     def __init__(self, lineno, col_offset, op, operand):
         super().__init__(lineno, col_offset)
         self.op = op
@@ -117,8 +134,8 @@ class UnaryOp(Expr):
 
 
 class BinOp(Expr):
-    __slots__ = ('left', 'op', 'right') + Expr.__slots__
-    
+    __slots__ = ("left", "op", "right") + Expr.__slots__
+
     def __init__(self, lineno, col_offset, left, op, right):
         super().__init__(lineno, col_offset)
         self.left = left
@@ -127,8 +144,8 @@ class BinOp(Expr):
 
 
 class Compare(Expr):
-    __slots__ = ('left', 'op', 'comparator') + Expr.__slots__
-    
+    __slots__ = ("left", "op", "comparator") + Expr.__slots__
+
     def __init__(self, lineno, col_offset, left, op, comparator):
         super().__init__(lineno, col_offset)
         self.left = left
@@ -137,8 +154,8 @@ class Compare(Expr):
 
 
 class Call(Expr):
-    __slots__ = ('func', 'args', 'keywords') + Expr.__slots__
-    
+    __slots__ = ("func", "args", "keywords") + Expr.__slots__
+
     def __init__(self, lineno, col_offset, func, args, keywords):
         super().__init__(lineno, col_offset)
         self.func = func
@@ -147,20 +164,20 @@ class Call(Expr):
 
 
 class Name(Expr):
-    __slots__ = ('id',) + Expr.__slots__
-    
+    __slots__ = ("id",) + Expr.__slots__
+
     def __init__(self, lineno, col_offset, id_):
         super().__init__(lineno, col_offset)
         self.id = id_
 
 
 class DictPath(Expr):
-    __slots__ = ('namespace', 'path') + Expr.__slots__
-    
+    __slots__ = ("namespace", "path") + Expr.__slots__
+
     def __init__(self, lineno, col_offset, path):
         super().__init__(lineno, col_offset)
 
-        ns_symbol = '::'
+        ns_symbol = "::"
         if ns_symbol not in path:
             self.namespace = None
             self.path = path
@@ -169,16 +186,16 @@ class DictPath(Expr):
 
 
 class List(Expr):
-    __slots__ = ('elts',) + Expr.__slots__
-    
+    __slots__ = ("elts",) + Expr.__slots__
+
     def __init__(self, lineno, col_offset, elts):
         super().__init__(lineno, col_offset)
         self.elts = elts
 
 
 class Dict(Expr):
-    __slots__ = ('keys', 'values') + Expr.__slots__
-    
+    __slots__ = ("keys", "values") + Expr.__slots__
+
     def __init__(self, lineno, col_offset, keys, values):
         super().__init__(lineno, col_offset)
         self.keys = keys
@@ -186,8 +203,8 @@ class Dict(Expr):
 
 
 class Constant(Expr):
-    __slots__ = ('value',) + Expr.__slots__
-    
+    __slots__ = ("value",) + Expr.__slots__
+
     def __init__(self, lineno, col_offset, value):
         super().__init__(lineno, col_offset)
         self.value = value

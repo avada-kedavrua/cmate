@@ -1,68 +1,41 @@
-import os
+# -------------------------------------------------------------------------
+# This file is part of the MindStudio project.
+# Copyright (c) 2025-2026 Huawei Technologies Co.,Ltd.
+#
+# MindStudio is licensed under Mulan PSL v2.
+# You can use this software according to the terms and conditions of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+#
+#          `http://license.coscl.org.cn/MulanPSL2`
+#
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+# -------------------------------------------------------------------------
+
 import json
-import socket
+import os
 import signal
-import logging
-from typing import Any
+import socket
 from enum import Enum
 from functools import total_ordering
+from typing import Any, Optional
+
+import psutil
 
 import yaml
-import psutil
 from colorama import Fore, Style
 from msguard.security import open_s
 
 
-class ANSIColoredFormatter(logging.Formatter):
-    COLORS = {
-        'WARNING': Fore.YELLOW,
-        'ERROR': Fore.RED
-    }
-
-    def format(self, record):
-        message = super().format(record)
-        if record.levelname in self.COLORS:
-            message = f"{self.COLORS[record.levelname]}{message}{Fore.RESET}"
-        return message
-
-
-LOG_LEVELS = {
-    "debug": logging.DEBUG,
-    "info": logging.INFO,
-    "warning": logging.WARNING,
-    "error": logging.ERROR,
-    "fatal": logging.FATAL,
-    "critical": logging.CRITICAL,
-}
-
-
-def get_logger():
-    logger = logging.getLogger("msprechecker")
-    logger.propagate = False
-    logger.setLevel(logging.INFO)
-    if not logger.handlers:
-        stream_handler = logging.StreamHandler()
-        formatter = ANSIColoredFormatter("%(message)s")
-        stream_handler.setFormatter(formatter)
-        logger.addHandler(stream_handler)
-
-    return logger
-
-
-cmate_logger = get_logger()
-
-
 @total_ordering
 class Severity(Enum):
-    INFO = '[RECOMMEND]'
-    WARNING = '[WARNING]'
-    ERROR = '[NOK]'
+    INFO = "[RECOMMEND]"
+    WARNING = "[WARNING]"
+    ERROR = "[NOK]"
 
-    _ORDER_MAP = {
-        "INFO": 0,
-        "WARNING": 1,
-        "ERROR": 2
-    }
+    _ORDER_MAP = {"INFO": 0, "WARNING": 1, "ERROR": 2}
 
     def __str__(self):
         return f"{self.color_code}{self.value}{Fore.RESET}"
@@ -82,18 +55,18 @@ class Severity(Enum):
         return {
             Severity.INFO: Style.BRIGHT + Fore.CYAN,
             Severity.WARNING: Style.BRIGHT + Fore.YELLOW,
-            Severity.ERROR: Style.BRIGHT + Fore.RED
+            Severity.ERROR: Style.BRIGHT + Fore.RED,
         }[self]
 
 
 def _ext_to_type(path: str) -> str:
     _, ext = os.path.splitext(path)
-    if ext.startswith('.'):
+    if ext.startswith("."):
         ext = ext[1:]
     return ext.lower()
 
 
-def load(path: str, parse_type: str = None) -> Any:
+def load(path: str, parse_type: Optional[str] = None) -> Any:
     """Load configuration from `path` and return parsed object.
 
     - If `parse_type` is not provided, it's derived from file extension.
@@ -102,8 +75,8 @@ def load(path: str, parse_type: str = None) -> Any:
     if parse_type is None:
         parse_type = _ext_to_type(path)
 
-    if parse_type in ('yaml', 'yml'):
-        with open_s(path, 'r', encoding='utf-8') as f:
+    if parse_type in ("yaml", "yml"):
+        with open_s(path, "r", encoding="utf-8") as f:
             docs = list(yaml.safe_load_all(f))
             if len(docs) == 0:
                 return None
@@ -111,8 +84,8 @@ def load(path: str, parse_type: str = None) -> Any:
                 return docs[0]
             return docs
 
-    if parse_type == 'json':
-        with open_s(path, 'r', encoding='utf-8') as f:
+    if parse_type == "json":
+        with open_s(path, "r", encoding="utf-8") as f:
             return json.load(f)
 
     raise TypeError(f"Unsupported parse type: {parse_type}")
@@ -125,12 +98,14 @@ def get_cur_ip():
         for addr in addrs:
             if addr.family == socket.AF_INET and not addr.address.startswith("127"):
                 return addr.address
-    return ''
+    return ""
 
 
 def func_timeout(timeout, func, *args, **kwargs):
     def handler(signum, frame):
-        raise TimeoutError(f"Function '{func.__qualname__}' timed out after {timeout} seconds.")
+        raise TimeoutError(
+            f"Function '{func.__qualname__}' timed out after {timeout} seconds."
+        )
 
     signal.signal(signal.SIGALRM, handler)
     signal.alarm(timeout)
