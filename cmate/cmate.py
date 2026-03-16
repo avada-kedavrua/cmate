@@ -606,7 +606,7 @@ def _execute(
 
 def setup_cmate_parser(
     subparser: argparse._SubParsersAction,
-    parents: List[argparse.ArgumentParser] = [],
+    parents: Optional[List[argparse.ArgumentParser]] = None,
 ) -> None:
     """Register cmate subcommands into an existing subparser container.
 
@@ -627,7 +627,7 @@ def setup_cmate_parser(
             ``ArgumentParser.add_subparsers()``.  The ``run`` and ``inspect``
             subcommands are registered into this container.
         parents: Additional parent parsers whose arguments are inherited by
-            every cmate subcommand.  Defaults to an empty list.
+            every cmate subcommand.  Defaults to ``None`` (no extra parents).
     """
     global_parser = argparse.ArgumentParser(add_help=False)
     global_parser.add_argument(
@@ -639,7 +639,7 @@ def setup_cmate_parser(
     )
     global_parser.add_argument("rule", type=Path, help="Path to the cmate rule file")
 
-    all_parents = [global_parser] + list(parents)
+    all_parents = [global_parser] + list(parents or [])
 
     # -- run -----------------------------------------------------------------
     run_parser = subparser.add_parser(
@@ -746,7 +746,7 @@ def main(args: Optional[List[str]] = None) -> int:
             parsed.collect_only,
             parsed.output_path,
             parsed.severity,
-            parsed.lines
+            parsed.lines,
         )
     except (OSError, ValueError, ParseFormatError, CmateError):
         logger.exception("Error during run")
