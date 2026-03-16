@@ -604,13 +604,31 @@ def _execute(
 # ---------------------------------------------------------------------------
 
 
-def main(args: Optional[List[str]] = None) -> int:
-    """Main entry point for the cmate command-line tool."""
-    parser = argparse.ArgumentParser(
-        prog="cmate",
-        description="CMATE – Configuration Management and Testing Engine",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
+def setup_cmate_parser(
+    subparser: argparse._SubParsersAction,
+    parents: List[argparse.ArgumentParser] = [],
+) -> None:
+    """Register cmate subcommands into an existing subparser container.
+
+    Intended for callers that want to embed cmate inside their own argument
+    parser.  The caller creates the top-level parser and calls
+    ``add_subparsers``; the resulting action object is passed here together
+    with an optional list of parent parsers that contribute shared / global
+    options (e.g. ``--log-level`` or a positional ``rule`` argument already
+    defined by the host application).
+
+    The function always prepends its own internal *cmate global* parent parser
+    (which adds ``-l/--log-level`` and the ``rule`` positional) to whatever
+    ``parents`` the caller supplies, so duplicate definitions should be
+    avoided.
+
+    Args:
+        subparser: The ``_SubParsersAction`` returned by
+            ``ArgumentParser.add_subparsers()``.  The ``run`` and ``inspect``
+            subcommands are registered into this container.
+        parents: Additional parent parsers whose arguments are inherited by
+            every cmate subcommand.  Defaults to an empty list.
+    """
     global_parser = argparse.ArgumentParser(add_help=False)
     global_parser.add_argument(
         "-l",
@@ -621,11 +639,11 @@ def main(args: Optional[List[str]] = None) -> int:
     )
     global_parser.add_argument("rule", type=Path, help="Path to the cmate rule file")
 
-    subparsers = parser.add_subparsers(dest="command", required=False)
+    all_parents = [global_parser] + list(parents)
 
     # -- run -----------------------------------------------------------------
-    run_parser = subparsers.add_parser(
-        "run", parents=[global_parser], help="Validate configurations against rules"
+    run_parser = subparser.add_parser(
+        "run", parents=all_parents, help="Validate configurations against rules"
     )
     run_parser.add_argument(
         "--configs",
@@ -674,8 +692,8 @@ def main(args: Optional[List[str]] = None) -> int:
     )
 
     # -- inspect -------------------------------------------------------------
-    inspect_parser = subparsers.add_parser(
-        "inspect", parents=[global_parser], help="Show rule file requirements"
+    inspect_parser = subparser.add_parser(
+        "inspect", parents=all_parents, help="Show rule file requirements"
     )
     inspect_parser.add_argument(
         "--format",
@@ -684,6 +702,18 @@ def main(args: Optional[List[str]] = None) -> int:
         default="text",
         help="Output format (default: text)",
     )
+
+
+def main(args: Optional[List[str]] = None) -> int:
+    """Main entry point for the cmate command-line tool."""
+    parser = argparse.ArgumentParser(
+        prog="cmate",
+        description="CMATE – Configuration Management and Testing Engine",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+    subparsers = parser.add_subparsers(dest="command", required=False)
+    setup_cmate_parser(subparsers)
 
     parsed = parser.parse_args(args)
     if not parsed.command:

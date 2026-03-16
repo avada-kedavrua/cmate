@@ -14,7 +14,7 @@
 # See the Mulan PSL v2 for more details.
 # -------------------------------------------------------------------------
 
-__all__ = ["run", "inspect", "parse", "main"]
+__all__ = ["run", "inspect", "parse", "main", "setup_cmate_parser"]
 
 
-from .cmate import inspect, main, parse, run
+from .cmate import inspect, main, parse, run, setup_cmate_parser
