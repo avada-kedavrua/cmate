@@ -10,6 +10,7 @@ controller_init: 'Controller 初始化配置文件'
 ---
 [contexts]
 ep_instance: '实例配置总数'
+npu_type: 'NPU 类型'
 
 ---
 
@@ -49,7 +50,7 @@ fi
 ---
 
 [par mindie_env]
-if ${contexnt::npu_type} == 'A2':
+if ${context::npu_type} == 'A2':
     assert ${mindie_server_decode_env.HCCL_INTRA_PCIE_ENABLE} == 1 and ${mindie_server_decode_env.HCCL_INTRA_ROCE_ENABLE} == 0, '校验 A2 通信优化参数：错误的 HCCL 通信链路配置会导致大 EP 节点间通信延时剧增甚至性能劣化，请按 A2 推荐值设置', info
 fi
 
@@ -94,3 +95,4 @@ for key, value in ${spec.replicasSpecs.Master.template.spec.nodeSelector}:
         assert get_k8s_labeled_nodes(key, value) >= 1, '校验部署节点可用性：无可用标签节点会导致 Controller 无法承载大 EP 管理流量，请检查标签配置', error
     fi
 done
+
