@@ -125,6 +125,130 @@ source set_env.sh 0
 cmate run rules.cmate -c env
 ```
 
+## 校验 LLM 推理服务配置（vLLM / SGLang）
+
+命令行参数本质上也是配置，只是表达形式不同。CMate 校验的是配置文件，而 vLLM 和 SGLang 都原生支持通过 `--config` 加载 YAML 配置文件。这意味着你可以直接用 CMate 校验推理服务的启动配置，无需额外的 CLI 解析。
+
+### 最佳实践：以 YAML 配置文件作为唯一真实来源
+
+不要把参数散落在启动脚本中，而是维护一份 YAML 配置文件，同时用于启动服务和 CMate 校验：
+
+```yaml
+# vllm_serve.yaml
+model: deepseek-v3
+tensor-parallel-size: 8
+gpu-memory-utilization: 0.95
+max-model-len: 32768
+dtype: auto
+trust-remote-code: true
+```
+
+用同一个文件启动和校验：
+
+```bash
+# 部署
+vllm serve --config vllm_serve.yaml
+
+# 校验
+cmate run vllm_rules.cmate -c vllm_serve:vllm_serve.yaml -C model_type:deepseek
+```
+
+SGLang 同理：
+
+```yaml
+# sglang_serve.yaml
+model-path: deepseek-v3
+host: 0.0.0.0
+port: 30000
+tensor-parallel-size: 8
+mem-fraction-static: 0.9
+```
+
+```bash
+# 部署
+python -m sglang.launch_server --config sglang_serve.yaml
+
+# 校验
+cmate run sglang_rules.cmate -c sglang_serve:sglang_serve.yaml
+```
+
+### 示例规则文件
+
+```
+[metadata]
+name = 'vLLM 推理服务配置检查'
+version = '1.0'
+---
+
+[targets]
+vllm_serve: 'vLLM 启动配置' @ 'yaml'
+---
+
+[contexts]
+model_type: '模型类型，如 deepseek / general'
+gpu_type: 'GPU 型号，如 A100 / A800'
+---
+
+[par env]
+assert ${VLLM_USE_V1} == '1', '必须使用 V1 引擎', error
+
+[par vllm_serve]
+assert ${vllm_serve::tensor-parallel-size} >= 1, 'TP 大小必须为正数', error
+assert ${vllm_serve::gpu-memory-utilization} <= 0.98, 'GPU 显存利用率过高', warning
+
+if ${context::model_type} == 'deepseek':
+    assert ${vllm_serve::max-model-len} >= 8192, 'DeepSeek 需要更长的上下文', warning
+    assert ${vllm_serve::trust-remote-code} == true, 'DeepSeek 需要 trust-remote-code', error
+fi
+```
+
+### Key Name 匹配：为什么推荐 YAML 优先
+
+**重要**：YAML 配置文件中的 key 名必须与 `.cmate` 规则文件中使用的 key 名完全一致。vLLM 和 SGLang 的 YAML 配置均使用 **长格式 kebab-case** 名称（如 `tensor-parallel-size`），规则文件中也应使用相同的名称。
+
+如果你使用 CLI 短别名（如 `-tp 8` 而不是 `--tensor-parallel-size 8`）并手动转换为 YAML，key 名可能与规则文件不匹配，导致校验静默失效。这就是为什么推荐以 YAML 配置文件作为唯一真实来源：它从根本上消除了别名归一化问题。
+
+| 方式 | Key 名一致性 | 是否推荐？ |
+|------|-------------|-----------|
+| YAML 配置文件（`--config`） | 有保障 — YAML 和规则使用相同的 key | ✅ 推荐 |
+| 手动 CLI 转 YAML | 存在别名不匹配风险（`tp` vs `tensor-parallel-size`） | ⚠️ 需谨慎 |
+
+### 纯 CLI 场景的转换方式
+
+如果确实需要校验没有 YAML 配置文件的命令（如 `vllm bench serve`），可以用简单脚本将 CLI 参数转为 YAML：
+
+```python
+# cli2yaml.py — 将 CLI 参数转换为 YAML
+import sys, yaml
+
+args = {}
+tokens = sys.argv[1:]
+i = 0
+while i < len(tokens):
+    if tokens[i].startswith('--'):
+        key = tokens[i].lstrip('-')
+        if '=' in key:
+            k, v = key.split('=', 1)
+            args[k] = yaml.safe_load(v)
+        elif i + 1 < len(tokens) and not tokens[i + 1].startswith('-'):
+            args[key] = yaml.safe_load(tokens[i + 1])
+            i += 1
+        else:
+            args[key] = True
+    i += 1
+
+yaml.dump(args, sys.stdout, default_flow_style=False)
+```
+
+使用方式：
+
+```bash
+python cli2yaml.py --model deepseek-v3 --tensor-parallel-size 8 --trust-remote-code > cli_args.yaml
+cmate run rules.cmate -c vllm_serve:cli_args.yaml
+```
+
+> **注意**：短参数（如 `-tp`）不会被自动归一化为标准长格式（`tensor-parallel-size`）。转换 CLI 参数时，请始终使用 `--long-form-names` 以确保与 CMate 规则匹配。
+
 ## 规则文件语法
 
 一个 `.cmate` 文件由以下几个段落（section）组成，段落之间用 `---` 分隔：

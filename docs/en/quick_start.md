@@ -216,6 +216,136 @@ cmate run env_check.cmate -c env
 
 Inside `[par env]`, unqualified variable names like `${OMP_NUM_THREADS}` resolve to the `env` namespace automatically, equivalent to `${env::OMP_NUM_THREADS}`.
 
+## Validating LLM Serving Configurations (vLLM / SGLang)
+
+CLI arguments are configuration — just expressed in a different syntax. Both vLLM and SGLang natively support YAML config files via `--config`, so CMate can validate your serving configurations directly without any CLI parsing.
+
+### Why YAML-First?
+
+The key insight is: **use a YAML config file as the single source of truth for both launching the service and validating with CMate.** This eliminates a whole class of problems around argument alias normalization (e.g., `--tp` vs `--tensor-parallel-size` vs `tensor_parallel_size`).
+
+### Step 1: Create a YAML config file
+
+```yaml
+# vllm_serve.yaml — used for both deployment and validation
+model: deepseek-v3
+tensor-parallel-size: 8
+gpu-memory-utilization: 0.95
+max-model-len: 32768
+dtype: auto
+trust-remote-code: true
+```
+
+### Step 2: Write validation rules
+
+Create `vllm_check.cmate`:
+
+```
+[metadata]
+name = 'vLLM Serving Config Check'
+version = '1.0'
+---
+
+[targets]
+vllm_serve: 'vLLM serving configuration' @ 'yaml'
+---
+
+[contexts]
+model_type: 'Model type, e.g. deepseek / general'
+gpu_type: 'GPU type, e.g. A100 / A800 / 910B'
+---
+
+[par env]
+assert ${VLLM_USE_V1} == '1', 'Must use V1 engine', error
+
+if ${context::model_type} == 'deepseek':
+    assert ${PYTORCH_NPU_ALLOC_CONF} == 'expandable_segments:True', 'Enable virtual memory for DeepSeek', warning
+fi
+
+[par vllm_serve]
+# Basic validation
+assert ${vllm_serve::tensor-parallel-size} >= 1, 'TP size must be positive', error
+assert ${vllm_serve::gpu-memory-utilization} > 0, 'GPU memory utilization must be positive', error
+assert ${vllm_serve::gpu-memory-utilization} <= 0.98, 'GPU memory utilization too high, risk of OOM', warning
+
+# Model-specific rules
+if ${context::model_type} == 'deepseek':
+    assert ${vllm_serve::max-model-len} >= 8192, 'DeepSeek needs longer context window', warning
+    assert ${vllm_serve::trust-remote-code} == true, 'DeepSeek requires trust-remote-code', error
+fi
+
+# GPU-specific rules
+if ${context::gpu_type} == 'A100':
+    assert ${vllm_serve::gpu-memory-utilization} <= 0.95, 'Recommended GPU utilization for A100', info
+fi
+```
+
+### Step 3: Deploy and validate
+
+```bash
+# Deploy with the same YAML
+vllm serve --config vllm_serve.yaml
+
+# Validate
+cmate run vllm_check.cmate -c vllm_serve:vllm_serve.yaml -c env -C model_type:deepseek gpu_type:A100
+```
+
+### SGLang works the same way
+
+```yaml
+# sglang_serve.yaml
+model-path: deepseek-v3
+host: 0.0.0.0
+port: 30000
+tensor-parallel-size: 8
+mem-fraction-static: 0.9
+```
+
+```bash
+python -m sglang.launch_server --config sglang_serve.yaml
+cmate run sglang_check.cmate -c sglang_serve:sglang_serve.yaml
+```
+
+### Key Name Matching
+
+Both vLLM and SGLang use **long-form kebab-case** names (e.g., `tensor-parallel-size`) in their YAML config files. Your `.cmate` rules must use the exact same key names. This is why YAML-first is the recommended approach — the names are guaranteed to match.
+
+If you convert CLI arguments to YAML manually, be aware that short aliases like `-tp` will not automatically expand to `tensor-parallel-size`, causing silent validation misses.
+
+### Converting CLI Arguments to YAML (Fallback)
+
+For commands that don't support `--config` (e.g., `vllm bench serve`), use a simple converter:
+
+```python
+# cli2yaml.py
+import sys, yaml
+
+args = {}
+tokens = sys.argv[1:]
+i = 0
+while i < len(tokens):
+    if tokens[i].startswith('--'):
+        key = tokens[i].lstrip('-')
+        if '=' in key:
+            k, v = key.split('=', 1)
+            args[k] = yaml.safe_load(v)
+        elif i + 1 < len(tokens) and not tokens[i + 1].startswith('-'):
+            args[key] = yaml.safe_load(tokens[i + 1])
+            i += 1
+        else:
+            args[key] = True
+    i += 1
+
+yaml.dump(args, sys.stdout, default_flow_style=False)
+```
+
+```bash
+python cli2yaml.py --model deepseek-v3 --tensor-parallel-size 8 > cli_args.yaml
+cmate run rules.cmate -c vllm_serve:cli_args.yaml
+```
+
+> **Note**: Always use `--long-form-names` when converting. Short flags like `-tp` are not normalized automatically.
+
 ## Looping Over List Fields
 
 ```

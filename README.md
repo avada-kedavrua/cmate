@@ -125,6 +125,130 @@ To invoke the script:
 cmate run rules.cmate -c env
 ```
 
+## Validating LLM Serving Configurations (vLLM / SGLang)
+
+CLI arguments are just configuration expressed in a different surface syntax. CMate validates config files, and both vLLM and SGLang natively support YAML config files via `--config`. This means you can use CMate to validate your serving configurations directly — no special CLI parsing needed.
+
+### Best Practice: YAML Config as the Single Source of Truth
+
+Instead of scattering arguments across launch scripts, maintain a YAML config file as the authoritative source for both launching the service and validating with CMate:
+
+```yaml
+# vllm_serve.yaml
+model: deepseek-v3
+tensor-parallel-size: 8
+gpu-memory-utilization: 0.95
+max-model-len: 32768
+dtype: auto
+trust-remote-code: true
+```
+
+Launch and validate from the same file:
+
+```bash
+# Deploy
+vllm serve --config vllm_serve.yaml
+
+# Validate
+cmate run vllm_rules.cmate -c vllm_serve:vllm_serve.yaml -C model_type:deepseek
+```
+
+The same approach works for SGLang:
+
+```yaml
+# sglang_serve.yaml
+model-path: deepseek-v3
+host: 0.0.0.0
+port: 30000
+tensor-parallel-size: 8
+mem-fraction-static: 0.9
+```
+
+```bash
+# Deploy
+python -m sglang.launch_server --config sglang_serve.yaml
+
+# Validate
+cmate run sglang_rules.cmate -c sglang_serve:sglang_serve.yaml
+```
+
+### Example Rule File
+
+```
+[metadata]
+name = 'vLLM Serving Config Check'
+version = '1.0'
+---
+
+[targets]
+vllm_serve: 'vLLM serving configuration' @ 'yaml'
+---
+
+[contexts]
+model_type: 'Model type, e.g. deepseek / general'
+gpu_type: 'GPU type, e.g. A100 / A800'
+---
+
+[par env]
+assert ${VLLM_USE_V1} == '1', 'Must use V1 engine', error
+
+[par vllm_serve]
+assert ${vllm_serve::tensor-parallel-size} >= 1, 'TP size must be positive', error
+assert ${vllm_serve::gpu-memory-utilization} <= 0.98, 'GPU memory utilization too high', warning
+
+if ${context::model_type} == 'deepseek':
+    assert ${vllm_serve::max-model-len} >= 8192, 'DeepSeek needs longer context', warning
+    assert ${vllm_serve::trust-remote-code} == true, 'DeepSeek requires trust-remote-code', error
+fi
+```
+
+### Key Name Matching: Why YAML-First Matters
+
+**Important**: The key names in your YAML config must exactly match the key names used in your `.cmate` rules. Both vLLM and SGLang accept arguments using the **long-form kebab-case** name (e.g., `tensor-parallel-size`), and the same name appears in the YAML config file.
+
+If you use CLI short aliases (like `-tp 8` instead of `--tensor-parallel-size 8`) and manually convert them to YAML, the key names may not match the rule file — causing silent validation misses. This is why maintaining a YAML config file as the single source of truth is the recommended approach: it eliminates alias normalization issues entirely.
+
+| Approach | Key Name Consistency | Recommended? |
+|----------|---------------------|-------------|
+| YAML config file (`--config`) | Guaranteed — same keys in YAML and rules | ✅ Yes |
+| Manual CLI-to-YAML conversion | Risk of alias mismatch (`tp` vs `tensor-parallel-size`) | ⚠️ Use with care |
+
+### For CLI-only Workflows
+
+If you must validate a command that doesn't use a YAML config file (e.g., `vllm bench serve`), you can convert CLI arguments to YAML with a simple script:
+
+```python
+# cli2yaml.py — Convert CLI arguments to YAML
+import sys, yaml
+
+args = {}
+tokens = sys.argv[1:]
+i = 0
+while i < len(tokens):
+    if tokens[i].startswith('--'):
+        key = tokens[i].lstrip('-')
+        if '=' in key:
+            k, v = key.split('=', 1)
+            args[k] = yaml.safe_load(v)
+        elif i + 1 < len(tokens) and not tokens[i + 1].startswith('-'):
+            args[key] = yaml.safe_load(tokens[i + 1])
+            i += 1
+        else:
+            args[key] = True
+    i += 1
+
+yaml.dump(args, sys.stdout, default_flow_style=False)
+```
+
+Usage:
+
+```bash
+python cli2yaml.py --model deepseek-v3 --tensor-parallel-size 8 --trust-remote-code > cli_args.yaml
+cmate run rules.cmate -c vllm_serve:cli_args.yaml
+```
+
+> **Note**: Short flags like `-tp` will not be normalized to their canonical long form (`tensor-parallel-size`). Always use `--long-form-names` when converting CLI arguments to YAML for CMate validation.
+
 ## Rule File Syntax
 
 A `.cmate` file consists of sections separated by `---`:

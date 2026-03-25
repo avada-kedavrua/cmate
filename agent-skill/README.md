@@ -61,6 +61,33 @@ The skill also recognizes optional columns for operators, conditions, severity l
 | server.port | 1024 | >= | | error | Port minimum |
 | log_level | debug,info,warn,error | in | | error | Valid levels |
 
+### Validating LLM Serving Configurations (vLLM / SGLang)
+
+CMate can also validate serving configurations for LLM inference frameworks. Both vLLM and SGLang natively support YAML config files via `--config`, making it easy to use the same YAML for both deployment and validation.
+
+**Best practice**: Maintain a YAML config file as the single source of truth:
+
+```yaml
+# vllm_serve.yaml
+model: deepseek-v3
+tensor-parallel-size: 8
+gpu-memory-utilization: 0.95
+max-model-len: 32768
+trust-remote-code: true
+```
+
+```bash
+# Deploy with YAML
+vllm serve --config vllm_serve.yaml
+
+# Validate with CMate
+cmate run vllm_rules.cmate -c vllm_serve:vllm_serve.yaml -c env -C model_type:deepseek
+```
+
+**Important — Key Name Matching**: The key names in your YAML config must exactly match the key names in your `.cmate` rules. Use the canonical long-form kebab-case names (e.g., `tensor-parallel-size`), NOT CLI short aliases (e.g., `-tp`). Short aliases will not match and cause silent validation failures.
+
+For CLI-only commands that don't support `--config`, a simple `cli2yaml.py` converter script is provided — but always use `--long-form` flag names when converting.
+
 ### Supported Source Formats
 
 | Format | Extensions | Notes |
@@ -97,7 +124,8 @@ Cmate-Skill/
 └── examples/
     ├── env-vars-excel.md             # Excel env var checklist → .cmate
     ├── json-config-csv.md            # CSV config requirements → .cmate
-    └── multi-scenario.md             # Multi-scenario deployment matrix → .cmate
+    ├── multi-scenario.md             # Multi-scenario deployment matrix → .cmate
+    └── vllm-serving-config.md        # vLLM/SGLang serving config → .cmate
 ```
 
 ## Requirements

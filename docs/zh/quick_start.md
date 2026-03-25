@@ -214,6 +214,136 @@ cmate run env_check.cmate -c env
 
 在 `[par env]` 中，不带命名空间的变量引用（如 `${OMP_NUM_THREADS}`）会自动解析为 `env` 命名空间，等价于 `${env::OMP_NUM_THREADS}`。
 
+## 校验 LLM 推理服务配置（vLLM / SGLang）
+
+命令行参数本质上也是配置，只是表达形式不同。vLLM 和 SGLang 都原生支持通过 `--config` 加载 YAML 配置文件，因此 CMate 可以直接校验推理服务的启动配置，无需额外的 CLI 解析。
+
+### 为什么推荐 YAML 优先？
+
+核心思路是：**以 YAML 配置文件作为唯一真实来源，同时用于启动服务和 CMate 校验。** 这从根本上避免了参数别名归一化的问题（例如 `--tp` vs `--tensor-parallel-size` vs `tensor_parallel_size`）。
+
+### Step 1: 创建 YAML 配置文件
+
+```yaml
+# vllm_serve.yaml — 同时用于部署和校验
+model: deepseek-v3
+tensor-parallel-size: 8
+gpu-memory-utilization: 0.95
+max-model-len: 32768
+dtype: auto
+trust-remote-code: true
+```
+
+### Step 2: 编写校验规则
+
+创建 `vllm_check.cmate`：
+
+```
+[metadata]
+name = 'vLLM 推理服务配置检查'
+version = '1.0'
+---
+
+[targets]
+vllm_serve: 'vLLM 启动配置' @ 'yaml'
+---
+
+[contexts]
+model_type: '模型类型，如 deepseek / general'
+gpu_type: 'GPU 型号，如 A100 / A800 / 910B'
+---
+
+[par env]
+assert ${VLLM_USE_V1} == '1', '必须使用 V1 引擎', error
+
+if ${context::model_type} == 'deepseek':
+    assert ${PYTORCH_NPU_ALLOC_CONF} == 'expandable_segments:True', 'DeepSeek 需要开启虚拟内存', warning
+fi
+
+[par vllm_serve]
+# 基本校验
+assert ${vllm_serve::tensor-parallel-size} >= 1, 'TP 大小必须为正数', error
+assert ${vllm_serve::gpu-memory-utilization} > 0, 'GPU 显存利用率必须为正数', error
+assert ${vllm_serve::gpu-memory-utilization} <= 0.98, 'GPU 显存利用率过高，有 OOM 风险', warning
+
+# 模型相关规则
+if ${context::model_type} == 'deepseek':
+    assert ${vllm_serve::max-model-len} >= 8192, 'DeepSeek 需要更长的上下文窗口', warning
+    assert ${vllm_serve::trust-remote-code} == true, 'DeepSeek 需要 trust-remote-code', error
+fi
+
+# GPU 相关规则
+if ${context::gpu_type} == 'A100':
+    assert ${vllm_serve::gpu-memory-utilization} <= 0.95, 'A100 建议 GPU 利用率', info
+fi
+```
+
+### Step 3: 部署并校验
+
+```bash
+# 用同一个 YAML 部署
+vllm serve --config vllm_serve.yaml
+
+# 校验
+cmate run vllm_check.cmate -c vllm_serve:vllm_serve.yaml -c env -C model_type:deepseek gpu_type:A100
+```
+
+### SGLang 用法相同
+
+```yaml
+# sglang_serve.yaml
+model-path: deepseek-v3
+host: 0.0.0.0
+port: 30000
+tensor-parallel-size: 8
+mem-fraction-static: 0.9
+```
+
+```bash
+python -m sglang.launch_server --config sglang_serve.yaml
+cmate run sglang_check.cmate -c sglang_serve:sglang_serve.yaml
+```
+
+### Key Name 匹配
+
+vLLM 和 SGLang 的 YAML 配置文件均使用 **长格式 kebab-case** 名称（如 `tensor-parallel-size`）。你的 `.cmate` 规则必须使用完全相同的 key 名。这就是为什么推荐 YAML 优先的原因 — key 名天然一致。
+
+如果手动将 CLI 参数转为 YAML，要注意短别名（如 `-tp`）不会自动展开为 `tensor-parallel-size`，会导致校验静默失效。
+
+### CLI 参数转 YAML（备选方案）
+
+对于不支持 `--config` 的命令（如 `vllm bench serve`），可以用简单的转换脚本：
+
+```python
+# cli2yaml.py
+import sys, yaml
+
+args = {}
+tokens = sys.argv[1:]
+i = 0
+while i < len(tokens):
+    if tokens[i].startswith('--'):
+        key = tokens[i].lstrip('-')
+        if '=' in key:
+            k, v = key.split('=', 1)
+            args[k] = yaml.safe_load(v)
+        elif i + 1 < len(tokens) and not tokens[i + 1].startswith('-'):
+            args[key] = yaml.safe_load(tokens[i + 1])
+            i += 1
+        else:
+            args[key] = True
+    i += 1
+
+yaml.dump(args, sys.stdout, default_flow_style=False)
+```
+
+```bash
+python cli2yaml.py --model deepseek-v3 --tensor-parallel-size 8 > cli_args.yaml
+cmate run rules.cmate -c vllm_serve:cli_args.yaml
+```
+
+> **注意**：转换时请始终使用 `--long-form-names`。短参数（如 `-tp`）不会被自动归一化。
+
 ## 使用循环校验列表字段
 
 ```
