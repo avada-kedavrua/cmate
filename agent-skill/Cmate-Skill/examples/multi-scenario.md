@@ -109,10 +109,10 @@ assert ${ServerConfig.httpsEnabled} == false, '如需安全证书建议开启', 
 
 ```bash
 # Check with DeepSeek on A2 hardware
-cmate run deployment_matrix.cmate -c mies_config:config.json -c env -C model_type:deepseek -C npu_type:A2
+cmate run deployment_matrix.cmate -c mies_config:config.json -c env -C model_type:deepseek npu_type:A2
 
 # Check with general model on A3 hardware
-cmate run deployment_matrix.cmate -c mies_config:config.json -c env -C model_type:general -C npu_type:A3
+cmate run deployment_matrix.cmate -c mies_config:config.json -c env -C model_type:general npu_type:A3
 ```
 
 ## Key Conversion Decisions
