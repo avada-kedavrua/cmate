@@ -9,13 +9,13 @@ controller_init: 'Controller 初始化配置文件'
 
 ---
 [contexts]
-ep_instance: '实例配置总数'
+ep_instances: '实例配置总数'
 npu_type: 'NPU 类型'
 
 ---
 
 [par user_config]
-assert ${deploy_config.p_instance_num} * ${deploy_config.single_p_instance_pod_num} + ${deploy_config.d_instance_num} * ${deploy_config.single_d_instance_pod_num} == ${context::ep_instance}, '校验算力拓扑规格：实例配置总数与物理服务器数量不匹配将导致算力资源无法闭环或过度分配，请核对部署规模', error
+assert ${deploy_config.p_instances_num} * ${deploy_config.single_p_instance_pod_num} + ${deploy_config.d_instances_num} * ${deploy_config.single_d_instance_pod_num} == ${context::ep_instances}, '校验算力拓扑规格：实例配置总数与物理服务器数量不匹配将导致算力资源无法闭环或过度分配，请核对部署规模', error
 assert image_exists(${deploy_config.image_name}), '校验部署镜像状态：镜像不存在或名称错误将导致容器启动阶段持续拉取失败（ImagePullBackOff），请确认镜像仓库路径', error
 assert path_exists(${deploy_config.mindie_host_log_path}), '校验日志持久化路径：宿主机路径缺失将导致推理引擎无法正常输出故障堆栈，请确保路径已预先创建且权限正确', error
 assert path_exists(${deploy_config.weight_mount_path}), '校验模型权重挂载点：根路径无效将导致所有节点加载专家分片失败，请确存储卷已挂载至宿主机', error

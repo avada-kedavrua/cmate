@@ -604,7 +604,7 @@ def _execute(
 # ---------------------------------------------------------------------------
 
 
-def setup_cmate_parser(
+def setup_cmate(
     subparser: argparse._SubParsersAction,
     parents: Optional[List[argparse.ArgumentParser]] = None,
 ) -> None:
@@ -629,22 +629,22 @@ def setup_cmate_parser(
         parents: Additional parent parsers whose arguments are inherited by
             every cmate subcommand.  Defaults to ``None`` (no extra parents).
     """
-    global_parser = argparse.ArgumentParser(add_help=False)
-    global_parser.add_argument(
-        "-l",
-        "--log-level",
-        choices=LOG_LEVELS,
-        default="error",
-        help="Logging verbosity",
-    )
-    global_parser.add_argument("rule", type=Path, help="Path to the cmate rule file")
-
-    all_parents = [global_parser] + list(parents or [])
+    if parents is None:
+        global_parser = argparse.ArgumentParser(add_help=False)
+        global_parser.add_argument(
+            "-l",
+            "--log-level",
+            choices=LOG_LEVELS,
+            default="error",
+            help="Logging verbosity",
+        )
+        parents = [global_parser]
 
     # -- run -----------------------------------------------------------------
     run_parser = subparser.add_parser(
-        "run", parents=all_parents, help="Validate configurations against rules"
+        "run", parents=parents, help="Validate configurations against rules"
     )
+    run_parser.add_argument("rule", type=Path, help="Path to the cmate rule file")
     run_parser.add_argument(
         "--configs",
         "-c",
@@ -693,8 +693,9 @@ def setup_cmate_parser(
 
     # -- inspect -------------------------------------------------------------
     inspect_parser = subparser.add_parser(
-        "inspect", parents=all_parents, help="Show rule file requirements"
+        "inspect", parents=parents, help="Show rule file requirements"
     )
+    inspect_parser.add_argument("rule", type=Path, help="Path to the cmate rule file")
     inspect_parser.add_argument(
         "--format",
         "-f",
@@ -713,7 +714,7 @@ def main(args: Optional[List[str]] = None) -> int:
     )
 
     subparsers = parser.add_subparsers(dest="command", required=False)
-    setup_cmate_parser(subparsers)
+    setup_cmate(subparsers)
 
     parsed = parser.parse_args(args)
     if not parsed.command:
