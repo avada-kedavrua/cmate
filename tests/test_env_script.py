@@ -1,12 +1,11 @@
 import logging
 import os
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from cmate import cmate
-from cmate.data_source import NA, DataSource
+from cmate.data_source import DataSource
 from cmate.parser import Parser
 from cmate.visitor import EnvScriptGenerator
 

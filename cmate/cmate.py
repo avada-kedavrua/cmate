@@ -16,6 +16,7 @@
 
 import argparse
 import ast
+import itertools
 import json
 import logging
 import os
@@ -475,8 +476,12 @@ def run(
         ConfigError: If a config file cannot be loaded.
         RuleCollectionError: If rule collection fails due to missing namespace.
     """
-    parsed_configs = _parse_configs(configs)
-    parsed_contexts = _parse_contexts(contexts)
+    # nargs gives list, append action gives nested list
+    # we need to flatten them before further processing
+    flattened_configs = itertools.chain.from_iterable(configs or [])
+    flattened_contexts = itertools.chain.from_iterable(contexts or [])
+    parsed_configs = _parse_configs(flattened_configs)
+    parsed_contexts = _parse_contexts(flattened_contexts)
     line_filter = _parse_lines(lines)
 
     node = parse(rule_path)
@@ -649,10 +654,15 @@ def setup_cmate(
         "--configs",
         "-c",
         nargs="*",
+        action="append",
         help="Config files: '<name>:<path>[@<type>]' or 'env'",
     )
     run_parser.add_argument(
-        "--contexts", "-C", nargs="*", help="Context variables: '<name>:<value>'"
+        "--contexts",
+        "-C",
+        nargs="*",
+        action="append",
+        help="Context variables: '<name>:<value>'",
     )
     run_parser.add_argument(
         "-co",
